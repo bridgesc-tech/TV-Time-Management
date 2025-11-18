@@ -2,30 +2,28 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="theme-color" content="#4A90E2">
-    <title>TV Time Manager</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📺</text></svg>">
-    <link rel="manifest" href="manifest.json" onerror="this.remove()">
-    <link rel="stylesheet" href="styles.css">
-    <link rel="apple-touch-icon" href="icon-192.png" onerror="this.remove()">
+    <meta name="apple-mobile-web-app-title" content="TicTacToe">
+    <meta name="description" content="Strategic TicTacToe with AI and multiplayer">
+    <meta name="theme-color" content="#667eea">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>TicTacToe Advanced</title>
+    <link rel="manifest" href="./manifest.json">
+    <link rel="stylesheet" href="./styles.css">
     
-    <!-- Firebase SDKs (only loads if not file:// protocol) -->
+    <!-- Firebase SDKs -->
     <script>
         if (window.location.protocol !== 'file:') {
-            // Load Firebase App first
             const script1 = document.createElement('script');
             script1.src = 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js';
             
             script1.onload = () => {
-                // Once Firebase App is loaded, load Firestore
                 const script2 = document.createElement('script');
                 script2.src = 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js';
                 
                 script2.onload = () => {
-                    // Once both are loaded, load the config
                     const configScript = document.createElement('script');
                     configScript.src = 'firebase-config.js';
                     document.head.appendChild(configScript);
@@ -35,6 +33,11 @@
             document.head.appendChild(script1);
         }
     </script>
+    
+    <!-- Apple Touch Icons -->
+    <link rel="apple-touch-icon" href="./icon-192.png">
+    <link rel="apple-touch-icon" sizes="192x192" href="./icon-192.png">
+    <link rel="apple-touch-icon" sizes="512x512" href="./icon-512.png">
 </head>
 <body>
     <!-- Update Notification Banner -->
@@ -58,119 +61,185 @@
                     </svg>
                 </button>
             </div>
-            <h1>📺 TV Time Manager</h1>
-            <p class="subtitle">Manage your children's TV time</p>
-            <div id="syncStatus" style="margin-top: 10px; font-size: 14px; color: white; text-align: center; font-weight: 500; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);"></div>
+            <h1>TicTacToe Advanced</h1>
+            <p>Play with Friends local and Online!</p>
         </header>
 
-        <div class="children-list" id="childrenList">
-            <!-- Children cards will be dynamically added here -->
-        </div>
-
-        <div class="empty-state" id="emptyState">
-            <p>👶 No children added yet.</p>
-            <p>Add your first child below to get started!</p>
-        </div>
-
-        <div class="add-child-section">
-            <h2>Add Child</h2>
-            <div class="input-group">
-                <input type="text" id="childNameInput" placeholder="Enter child's name" maxlength="30">
-                <button id="addChildBtn" class="btn btn-primary">Add</button>
+        <div class="game-mode-selection" id="gameModeSelection">
+            <h2>Choose Game Mode</h2>
+            <div class="mode-buttons">
+                <button class="mode-btn" onclick="startGame('multiplayer')">
+                    <span class="mode-icon">👥</span>
+                    <span class="mode-text">Local Multiplayer</span>
+                </button>
+                <button class="mode-btn" onclick="showGameRoomModal()">
+                    <span class="mode-icon">🌐</span>
+                    <span class="mode-text">Online Multiplayer</span>
+                </button>
             </div>
         </div>
-    </div>
 
-    <!-- Time Adjustment Modal -->
-    <div class="modal" id="timeModal">
-        <div class="modal-content">
-            <span class="close" id="closeModal">&times;</span>
-            <h2 id="modalTitle">Adjust Time</h2>
-            <div class="modal-body">
-                <div class="daily-bonus-disclaimer">
-                    <p>⏰ 30 minutes will be automatically added every day at midnight</p>
-                </div>
-                <div class="time-display">
-                    <p class="child-name-modal" id="modalChildName"></p>
-                    <p class="current-time">Current Balance: <span id="modalCurrentTime">0:00</span></p>
-                </div>
-                
-                <div class="time-adjust-controls">
-                    <div class="adjust-control-row">
-                        <button id="modeSubtract" class="mode-btn subtract-btn">➖ Subtract</button>
-                        <div class="amount-display">
-                            <span id="selectedAmount">0</span>
+        <!-- Game Room Modal -->
+        <div class="modal" id="gameRoomModal" style="display: none;" onclick="handleModalBackdropClick(event)">
+            <div class="modal-content" style="max-width: 400px;" onclick="event.stopPropagation()">
+                <span class="close" onclick="closeGameRoomModal()" style="-webkit-tap-highlight-color: transparent; touch-action: manipulation;">&times;</span>
+                <h2>Online Multiplayer</h2>
+                <div class="modal-body">
+                    <div style="margin-bottom: 20px;">
+                        <div style="margin-bottom: 15px;">
+                            <label for="playerNameInput" style="display: block; margin-bottom: 8px; font-weight: 600;">Your Name:</label>
+                            <input type="text" id="playerNameInput" placeholder="Enter your name" maxlength="15" style="width: 100%; padding: 12px; border: 2px solid #E1E8ED; border-radius: 8px; font-size: 16px;">
                         </div>
-                        <button id="modeAdd" class="mode-btn add-btn">➕ Add</button>
+                        <button id="createGameBtn" class="btn btn-primary" style="width: 100%; padding: 15px; margin-bottom: 10px; -webkit-tap-highlight-color: transparent; touch-action: manipulation;">
+                            🎮 Create New Game
+                        </button>
+                        <p style="text-align: center; color: #7F8C8D; font-size: 14px; margin: 15px 0;">OR</p>
+                        <div style="margin-top: 15px;">
+                            <label for="roomIdInput" style="display: block; margin-bottom: 8px; font-weight: 600;">Join Game Room:</label>
+                            <input type="text" id="roomIdInput" placeholder="Enter Game ID" style="width: 100%; padding: 12px; border: 2px solid #E1E8ED; border-radius: 8px; font-size: 16px; margin-bottom: 10px;">
+                            <button id="joinGameBtn" class="btn btn-secondary" style="width: 100%; padding: 12px; margin-bottom: 10px; -webkit-tap-highlight-color: transparent; touch-action: manipulation;">Join Game</button>
+                        </div>
+                        <button onclick="closeGameRoomModal()" class="btn btn-secondary" style="width: 100%; padding: 12px; background: #E74C3C; color: white; -webkit-tap-highlight-color: transparent; touch-action: manipulation;">
+                            Cancel
+                        </button>
                     </div>
-                    
-                    <button id="applyTimeBtn" class="btn btn-primary apply-time-btn">Apply</button>
-                    
-                    <button id="showChoresBtn" class="btn btn-secondary chores-btn">📋 Chores</button>
-                    
-                    <div class="chores-list" id="choresList" style="display: none;">
-                        <div class="chores-header">
-                            <h3 style="margin: 0; color: var(--text-primary);">Select a Chore</h3>
-                            <button id="toggleEditModeBtn" class="edit-icon-btn" title="Edit chores">✏️</button>
-                        </div>
-                        <div class="chores-grid" id="choresGrid">
-                            <!-- Chores will be dynamically added here -->
-                        </div>
-                    </div>
+                    <div id="roomStatus" style="text-align: center; padding: 10px; font-size: 14px; color: #7F8C8D;"></div>
                 </div>
             </div>
         </div>
-    </div>
-    
-    <!-- Add Chore Modal -->
-    <div class="modal" id="addChoreModal">
-        <div class="modal-content" style="max-width: 400px;">
-            <span class="close" id="closeAddChoreModal">&times;</span>
-            <h2>Add Custom Chore</h2>
-            <div class="modal-body">
-                <div style="margin-bottom: 20px;">
-                    <label for="choreNameInput" style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-primary);">Chore Name:</label>
-                    <input type="text" id="choreNameInput" placeholder="Enter chore name" maxlength="30" style="width: 100%; padding: 12px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 16px; box-sizing: border-box;">
-                </div>
-                <div style="margin-bottom: 20px;">
-                    <label for="choreTimeInput" style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-primary);">Time:</label>
-                    <select id="choreTimeInput" style="width: 100%; padding: 12px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 16px; box-sizing: border-box; background: white; cursor: pointer;">
-                        <option value="5">5 minutes</option>
-                        <option value="10">10 minutes</option>
-                        <option value="15">15 minutes</option>
-                        <option value="30">30 minutes</option>
-                        <option value="60">1 hour</option>
-                    </select>
-                </div>
-                <button id="saveChoreBtn" class="btn btn-primary" style="width: 100%; padding: 14px;">Save Chore</button>
-            </div>
-        </div>
-    </div>
 
-    <!-- Family Sync Modal -->
-    <div class="modal" id="familyModal">
-        <div class="modal-content">
-            <span class="close" id="closeFamilyModal">&times;</span>
-            <h2>Family Sync ID</h2>
-            <div class="modal-body">
-                <p style="font-size: 14px; color: #7F8C8D; margin-bottom: 15px;">Share this ID with other devices to sync data</p>
-                <div class="family-id-display">
-                    <input type="text" id="familyIdDisplay" readonly value="" style="flex: 1; padding: 10px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 14px; font-family: monospace; background: #F5F7FA;">
-                    <button id="copyFamilyIdBtn" class="btn btn-primary" style="padding: 10px 20px; margin-left: 10px;">Copy</button>
+        <!-- Waiting Room (shown when created room, waiting for player 2) -->
+        <div class="modal" id="waitingRoomModal" style="display: none;" onclick="handleModalBackdropClick(event)">
+            <div class="modal-content" style="max-width: 400px;" onclick="event.stopPropagation()">
+                <h2>Waiting for Opponent</h2>
+                <div class="modal-body">
+                    <p style="text-align: center; margin-bottom: 20px;">Share this Game ID:</p>
+                    <div style="display: flex; gap: 10px; margin-bottom: 20px; align-items: center;">
+                        <input type="text" id="gameRoomIdDisplay" readonly style="flex: 1; max-width: 180px; padding: 12px; border: 2px solid #E1E8ED; border-radius: 8px; font-family: monospace; font-size: 18px; text-align: center; background: #F5F7FA;">
+                        <button id="copyGameRoomBtn" class="btn btn-primary" style="flex-shrink: 0; padding: 12px 20px; -webkit-tap-highlight-color: transparent; touch-action: manipulation; white-space: nowrap;">Copy</button>
+                    </div>
+                    <div id="waitingStatus" style="text-align: center; padding: 10px;">
+                        <div class="spinner" style="margin: 20px auto; width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #667eea; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                        <p>Waiting for another player to join...</p>
+                    </div>
+                    <button onclick="cancelWaitingRoom()" class="btn btn-secondary" style="width: 100%; padding: 12px; margin-top: 15px; background: #E74C3C; color: white; -webkit-tap-highlight-color: transparent; touch-action: manipulation;">
+                        Cancel
+                    </button>
                 </div>
-                <div class="family-id-input" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid var(--border-color);">
-                    <label for="familyIdInput" style="display: block; font-size: 14px; margin-bottom: 10px; color: #2C3E50; font-weight: 600;">Connect to existing family:</label>
-                    <div style="display: flex; gap: 10px;">
-                        <input type="text" id="familyIdInput" placeholder="Paste family ID here" style="flex: 1; padding: 10px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 14px;">
-                        <button id="setFamilyIdBtn" class="btn btn-secondary" style="padding: 10px 20px;">Connect</button>
+            </div>
+        </div>
+
+        <div class="coin-flip-container" id="coinFlipContainer" style="display: none;">
+            <h2>Coin Flip</h2>
+            <p>Determining who goes first...</p>
+            <div class="coin" id="coin">
+                <div class="coin-side coin-green" id="coinGreen">
+                </div>
+                <div class="coin-side coin-red" id="coinRed">
+                </div>
+            </div>
+            <div class="coin-result" id="coinResult" style="display: none;">
+                <h3 id="coinResultText"></h3>
+                <button class="control-btn" onclick="proceedToGame()">Start Game</button>
+            </div>
+        </div>
+
+        <div class="game-container" id="gameContainer" style="display: none;">
+            <div class="game-info">
+                <div class="current-player" id="currentPlayer">
+                    <span class="player-color-indicator" id="playerColorIndicator"></span>
+                    <span class="player-name" id="playerName">Player 1's Turn</span>
+                </div>
+                <div class="game-stats">
+                    <div class="stat">
+                        <span class="stat-label">Player Wins:</span>
+                        <span class="stat-value" id="playerWins">0</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Draws:</span>
+                        <span class="stat-value" id="draws">0</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">AI/Player2 Wins:</span>
+                        <span class="stat-value" id="opponentWins">0</span>
                     </div>
                 </div>
             </div>
+
+            <div class="game-area">
+                <div class="player-deck left-deck" id="player1Deck">
+                    <h3>Player 1 Cards</h3>
+                    <div class="deck-container" id="player1DeckContainer">
+                        <!-- Player 1 cards will be dynamically generated here -->
+                    </div>
+                </div>
+
+                <div class="game-board" id="gameBoard">
+                    <div class="cell" data-index="0"></div>
+                    <div class="cell" data-index="1"></div>
+                    <div class="cell" data-index="2"></div>
+                    <div class="cell" data-index="3"></div>
+                    <div class="cell" data-index="4"></div>
+                    <div class="cell" data-index="5"></div>
+                    <div class="cell" data-index="6"></div>
+                    <div class="cell" data-index="7"></div>
+                    <div class="cell" data-index="8"></div>
+                    <div class="cell" data-index="9"></div>
+                    <div class="cell" data-index="10"></div>
+                    <div class="cell" data-index="11"></div>
+                    <div class="cell" data-index="12"></div>
+                    <div class="cell" data-index="13"></div>
+                    <div class="cell" data-index="14"></div>
+                    <div class="cell" data-index="15"></div>
+                </div>
+
+                <div class="player-deck right-deck" id="player2Deck">
+                    <h3>Player 2/AI Cards</h3>
+                    <div class="deck-container" id="player2DeckContainer">
+                        <!-- Player 2/AI cards will be dynamically generated here -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="game-controls">
+                <button class="control-btn" onclick="resetGame()">New Game</button>
+                <button class="control-btn" onclick="changeGameMode()">Change Mode</button>
+                <button class="control-btn share-btn" id="shareGameBtn" onclick="shareGame()" style="display: none;">📤 Share Game</button>
+            </div>
+        </div>
+
+        <div class="game-result" id="gameResult" style="display: none;">
+            <h2 id="resultMessage"></h2>
+            
+            <!-- Emote Section for Online Multiplayer -->
+            <div id="emoteSection" style="display: none; margin: 20px 0;">
+                <p style="font-size: 14px; color: #7F8C8D; margin-bottom: 10px;">Send a reaction:</p>
+                <div class="emote-buttons" style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+                    <button class="emote-btn" onclick="sendEmote('😊')" title="Happy">😊</button>
+                    <button class="emote-btn" onclick="sendEmote('😄')" title="Laughing">😄</button>
+                    <button class="emote-btn" onclick="sendEmote('🤔')" title="Thinking">🤔</button>
+                    <button class="emote-btn" onclick="sendEmote('👍')" title="Good Game">👍</button>
+                    <button class="emote-btn" onclick="sendEmote('🎉')" title="Celebrate">🎉</button>
+                    <button class="emote-btn" onclick="sendEmote('😢')" title="Sad">😢</button>
+                    <button class="emote-btn" onclick="sendEmote('🖕')" title="Middle Finger">🖕</button>
+                </div>
+                <div id="emoteDisplay" style="margin-top: 15px; display: flex; justify-content: center; align-items: center; gap: 20px; font-size: 24px; min-height: 35px;">
+                    <div style="text-align: center;">
+                        <div style="font-size: 12px; color: #7F8C8D; margin-bottom: 5px;" id="myEmoteLabel">You</div>
+                        <div id="myEmoteDisplay"></div>
+                    </div>
+                    <div style="font-size: 18px; color: #7F8C8D;">VS</div>
+                    <div style="text-align: center;">
+                        <div style="font-size: 12px; color: #7F8C8D; margin-bottom: 5px;" id="opponentEmoteLabel">Opponent</div>
+                        <div id="receivedEmoteDisplay"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <button class="control-btn" onclick="resetGame()">Play Again</button>
+            <button class="control-btn" onclick="changeGameMode()">Change Mode</button>
         </div>
     </div>
-
-    <!-- Family Sync Button (Fixed at bottom) -->
-    <button id="openFamilyModalBtn" class="family-sync-button" title="Family Sync Settings">🔗</button>
 
     <!-- Settings Modal -->
     <div class="modal" id="settingsModal" style="display: none;">
@@ -192,7 +261,6 @@
         </div>
     </div>
 
-    <script src="script.js"></script>
+    <script src="./script.js"></script>
 </body>
 </html>
-

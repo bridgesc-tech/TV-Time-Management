@@ -1,997 +1,1878 @@
-// TV Time Manager Application
-class TVTimeManager {
+class TicTacToeCardGame {
     constructor() {
-        this.children = [];
+        this.board = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
+        this.currentPlayer = 'green'; // 'green' or 'red'
+        this.gameMode = null;
+        this.gameActive = false;
+        this.player1Ready = false; // For online multiplayer ready status
+        this.player2Ready = false; // For online multiplayer ready status
+        this.scores = { green: 0, red: 0, draws: 0 };
+        this.winningCombinations = [
+            // Rows
+            [0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15],
+            // Columns
+            [0, 4, 8, 12], [1, 5, 9, 13], [2, 6, 10, 14], [3, 7, 11, 15],
+            // Diagonals
+            [0, 5, 10, 15], [3, 6, 9, 12]
+        ];
+        
+        // Card deck management
+        this.playerDecks = {
+            green: this.createDeck('green'),
+            red: this.createDeck('red')
+        };
+        
+        this.draggedCard = null;
+        this.selectedCard = null; // For mobile touch support
+        
+        // Track which tiles have been replaced (locked tiles)
+        this.replacedTiles = new Set();
+        
+        // Store cell colors for online multiplayer
+        this.storedCellColors = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
+        
+        // Firebase online multiplayer
+        this.gameRoomId = null;
+        this.myPlayerColor = null; // 'green' or 'red' - determines which player I am
+        this.myPlayerName = 'Player'; // Player's name
+        this.opponentName = 'Opponent'; // Opponent's name
         this.firebaseEnabled = false;
-        this.familyId = this.getOrCreateFamilyId();
-        this.isProcessingBonus = false; // Flag to prevent Firebase overwrites during bonus processing
-        this.MAX_TIME_BALANCE = 300; // Maximum time balance in minutes (5 hours)
+        this.gameUnsubscribe = null; // Firebase listener unsubscribe function
+        this.gameResult = null; // Store game result (win/draw) for syncing
+        this.receivedEmote = null; // Store emote received from opponent
+        this.myEmote = null; // Store emote I sent
+        this.isLoadingFromFirebase = false; // Flag to prevent recursive Firebase loads
         
-        // Time adjustment state - single unified array ordered from negative to positive
-        // Add moves right (higher values), Subtract moves left (lower values)
-        this.timeAmounts = [-60, -30, -15, -10, -5, 0, 5, 10, 15, 30, 60];
-        this.currentAmountIndex = 5; // Start at index 5 which is 0
-        
-        // Default chores (empty - all chores are custom)
-        this.defaultChores = [];
-        
-        // Custom chores (synced across family via Firebase)
-        this.customChores = [];
-        this.chores = []; // Combined list (starts empty)
-        
-        // Track which chore is being edited
-        this.editingChoreId = null;
-        // Track if we're in edit mode for chores
-        this.choresEditMode = false;
-        
-        // Wait for Firebase scripts to load, then initialize
-        // Check multiple times in case scripts load slowly on mobile
-        this.waitForFirebase(() => {
-            this.initializeFirebase();
-            this.loadChildren().then(() => {
-                // Load custom chores (handle errors gracefully)
-                this.loadCustomChores().catch(error => {
-                    console.error('Error loading custom chores:', error);
-                    this.customChores = [];
-                    this.updateChoresList();
-                }).then(() => {
-                    this.initializeApp();
-                    this.setupMidnightScheduler(); // This calls checkDailyBonus() internally
-                });
-            }).catch(error => {
-                console.error('Error loading children:', error);
-                // Still initialize app even if loading fails
-                this.initializeApp();
-                this.setupMidnightScheduler();
-            });
+        this.initializeEventListeners();
+        this.updateDisplay();
+        this.checkFirebase();
+    }
+
+    checkFirebase() {
+        // Wait for Firebase to be ready
+        const checkFirebase = () => {
+            if (typeof db !== 'undefined' && db !== null) {
+                this.firebaseEnabled = true;
+                console.log('Firebase ready for TicTacToe');
+            } else {
+                setTimeout(checkFirebase, 100);
+            }
+        };
+        checkFirebase();
+    }
+
+    createDeck(color) {
+        const deck = [];
+        // Each player gets 2 copies of numbers 1-5
+        for (let i = 1; i <= 5; i++) {
+            deck.push({ number: i, color: color, used: false, id: `${color}-${i}-1` });
+            deck.push({ number: i, color: color, used: false, id: `${color}-${i}-2` });
+        }
+        return deck;
+    }
+
+    initializeEventListeners() {
+        const cells = document.querySelectorAll('.cell');
+        cells.forEach(cell => {
+            cell.addEventListener('dragover', (e) => this.handleDragOver(e));
+            cell.addEventListener('drop', (e) => this.handleDrop(e));
+            cell.addEventListener('dragenter', (e) => this.handleDragEnter(e));
+            cell.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+            
+            // Touch support for mobile
+            cell.addEventListener('touchstart', (e) => this.handleCellTouchStart(e));
+            cell.addEventListener('touchend', (e) => this.handleCellTouchEnd(e));
         });
     }
 
-    waitForFirebase(callback, attempts = 0) {
-        const maxAttempts = 20; // Try for up to 2 seconds (20 * 100ms)
-        if (typeof firebase !== 'undefined' || attempts >= maxAttempts) {
-            callback();
+    startGame(mode) {
+        this.gameMode = mode;
+        
+        // Close any open modals first
+        document.getElementById('gameRoomModal').style.display = 'none';
+        document.getElementById('waitingRoomModal').style.display = 'none';
+        
+        // Online mode is now handled by Firebase game rooms via showGameRoomModal()
+        // For backwards compatibility, still check URL for old-style game states
+        if (mode === 'online') {
+            const urlParams = new URLSearchParams(window.location.search);
+            const gameState = urlParams.get('state');
+            
+            if (gameState) {
+                // Load existing game from URL (legacy support)
+                this.loadGameFromURL(gameState);
+                return;
+            }
+            // If no URL state, online mode should have been triggered via modal
+            // Just return and let modal handle it
+                return;
+        }
+        
+        // Show coin flip for AI and local multiplayer
+        document.getElementById('gameModeSelection').style.display = 'none';
+        document.getElementById('coinFlipContainer').style.display = 'block';
+        document.getElementById('gameContainer').style.display = 'none';
+        document.getElementById('gameResult').style.display = 'none';
+        
+        this.performCoinFlip();
+    }
+
+    performCoinFlip() {
+        const coin = document.getElementById('coin');
+        const coinResult = document.getElementById('coinResult');
+        const coinResultText = document.getElementById('coinResultText');
+        
+        // Hide result initially
+        coinResult.style.display = 'none';
+        
+        // Randomly determine winner first
+        const randomValue = Math.random();
+        const winner = randomValue < 0.5 ? 'green' : 'red';
+        this.coinFlipWinner = winner;
+        
+        console.log(`Coin flip - Random value: ${randomValue}, Winner: ${winner}`);
+        
+        // Start JavaScript animation
+        this.animateCoinFlip(coin, winner, coinResult, coinResultText);
+    }
+
+    animateCoinFlip(coin, winner, coinResult, coinResultText) {
+        // Start CSS animation
+        coin.classList.add('flipping');
+        
+        // Show result after animation completes
+        setTimeout(() => {
+            // Stop animation
+            coin.classList.remove('flipping');
+            
+            // Set final position based on winner
+            const coinGreen = document.getElementById('coinGreen');
+            const coinRed = document.getElementById('coinRed');
+            
+            if (winner === 'green') {
+                coinGreen.style.transform = 'rotateY(0deg)';
+                coinRed.style.transform = 'rotateY(180deg)';
+            } else {
+                coinGreen.style.transform = 'rotateY(180deg)';
+                coinRed.style.transform = 'rotateY(0deg)';
+            }
+            
+            // Show result based on game mode
+            let winnerText;
+            if (this.gameMode === 'multiplayer') {
+                winnerText = winner === 'green' ? 'Player 1 goes first!' : 'Player 2 goes first!';
+            } else {
+                winnerText = winner === 'green' ? 'You go first!' : 'Opponent goes first!';
+            }
+            coinResultText.textContent = winnerText;
+            coinResult.style.display = 'block';
+        }, 2000); // Match CSS animation duration
+    }
+
+    proceedToGame() {
+        // Close any open modals
+        document.getElementById('gameRoomModal').style.display = 'none';
+        document.getElementById('waitingRoomModal').style.display = 'none';
+        
+        this.resetBoard();
+        this.gameActive = true;
+        
+        // Set the starting player based on coin flip AFTER resetBoard
+        this.currentPlayer = this.coinFlipWinner;
+        
+        document.getElementById('coinFlipContainer').style.display = 'none';
+        document.getElementById('gameContainer').style.display = 'block';
+        
+        this.updateCurrentPlayerDisplay();
+        this.updatePlayerDeck();
+        
+    }
+
+    resetBoard() {
+        console.log('resetBoard() called - resetting board array');
+        this.board = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
+        this.currentPlayer = 'green';
+        this.gameActive = true;
+        this.gameResult = null; // Clear any previous game result
+        this.myEmote = null; // Clear emotes
+        this.receivedEmote = null;
+        this.player1Ready = false; // Reset ready status
+        this.player2Ready = false; // Reset ready status
+        
+        // Clear emote display
+        const myEmoteDisplay = document.getElementById('myEmoteDisplay');
+        const receivedEmoteDisplay = document.getElementById('receivedEmoteDisplay');
+        if (myEmoteDisplay) {
+            myEmoteDisplay.textContent = '';
+        }
+        if (receivedEmoteDisplay) {
+            receivedEmoteDisplay.textContent = '';
+        }
+        
+        // Reset decks
+        this.playerDecks.green = this.createDeck('green');
+        this.playerDecks.red = this.createDeck('red');
+        
+        // Reset selected card
+        this.selectedCard = null;
+        
+        // Reset replaced tiles tracking
+        this.replacedTiles.clear();
+        
+        // Reset stored cell colors
+        this.storedCellColors = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
+        
+        const cells = document.querySelectorAll('.cell');
+        cells.forEach(cell => {
+            cell.textContent = '';
+            cell.className = 'cell';
+            cell.classList.remove('winning'); // Remove winning highlights
+        });
+        
+        this.updateCurrentPlayerDisplay();
+        this.updatePlayerDeck();
+    }
+
+    updatePlayerDeck() {
+        // Update Player 1 (Green) deck
+        const player1Container = document.getElementById('player1DeckContainer');
+        const player1Label = document.querySelector('#player1Deck h3');
+        
+        // Update player name label for online mode
+        if (this.gameMode === 'online' && player1Label) {
+            const greenPlayerName = this.myPlayerColor === 'green' ? this.myPlayerName : this.opponentName;
+            player1Label.textContent = `${greenPlayerName}'s Cards`;
+        } else if (player1Label && this.gameMode !== 'online') {
+            player1Label.textContent = 'Player 1 Cards';
+        }
+        
+        player1Container.innerHTML = '';
+        
+        const greenDeck = this.playerDecks.green;
+        greenDeck.forEach(card => {
+            const cardElement = document.createElement('div');
+            cardElement.className = `card ${card.color}`;
+            cardElement.textContent = card.number;
+            cardElement.dataset.cardId = card.id;
+            
+            if (card.used) {
+                // Mark used cards as disabled and non-draggable
+                cardElement.classList.add('used');
+                cardElement.draggable = false;
+                cardElement.style.opacity = '0.3';
+                cardElement.style.cursor = 'not-allowed';
+            } else {
+                // Available cards are draggable only on current player's turn
+                // In online mode, also check if it's our turn
+                const canDrag = this.currentPlayer === 'green' && 
+                               (this.gameMode !== 'online' || this.currentPlayer === this.myPlayerColor);
+                cardElement.draggable = canDrag;
+                if (canDrag) {
+                cardElement.addEventListener('dragstart', (e) => this.handleDragStart(e));
+                cardElement.addEventListener('dragend', (e) => this.handleDragEnd(e));
+                // Touch support for mobile
+                cardElement.addEventListener('touchend', (e) => this.handleCardTouch(e, card));
+                } else {
+                    cardElement.style.opacity = '0.6';
+                    cardElement.style.cursor = 'not-allowed';
+                }
+            }
+            
+            player1Container.appendChild(cardElement);
+        });
+        
+        // Update Player 2/AI (Red) deck
+        const player2Container = document.getElementById('player2DeckContainer');
+        const player2Label = document.querySelector('#player2Deck h3');
+        
+        // Update player name label for online mode
+        if (this.gameMode === 'online' && player2Label) {
+            const redPlayerName = this.myPlayerColor === 'red' ? this.myPlayerName : this.opponentName;
+            player2Label.textContent = `${redPlayerName}'s Cards`;
+        } else if (player2Label && this.gameMode === 'multiplayer') {
+            player2Label.textContent = 'Player 2 Cards';
+        }
+        
+        player2Container.innerHTML = '';
+        
+        const redDeck = this.playerDecks.red;
+        redDeck.forEach(card => {
+            const cardElement = document.createElement('div');
+            cardElement.className = `card ${card.color}`;
+            cardElement.textContent = card.number;
+            cardElement.dataset.cardId = card.id;
+            
+            if (card.used) {
+                // Mark used cards as disabled and non-draggable
+                cardElement.classList.add('used');
+                cardElement.draggable = false;
+                cardElement.style.opacity = '0.3';
+                cardElement.style.cursor = 'not-allowed';
+            } else {
+                // Available cards are draggable only on current player's turn
+                // In online mode, also check if it's our turn
+                const canDrag = this.currentPlayer === 'red' && 
+                               (this.gameMode !== 'online' || this.currentPlayer === this.myPlayerColor);
+                cardElement.draggable = canDrag;
+                if (canDrag) {
+                cardElement.addEventListener('dragstart', (e) => this.handleDragStart(e));
+                cardElement.addEventListener('dragend', (e) => this.handleDragEnd(e));
+                // Touch support for mobile
+                cardElement.addEventListener('touchend', (e) => this.handleCardTouch(e, card));
+                } else {
+                    cardElement.style.opacity = '0.6';
+                    cardElement.style.cursor = 'not-allowed';
+                }
+            }
+            
+            player2Container.appendChild(cardElement);
+        });
+    }
+
+    handleDragStart(e) {
+        if (!this.gameActive) {
+            e.preventDefault();
+            return;
+        }
+        
+        // Only allow dragging if it's the current player's turn
+        const cardColor = e.target.classList.contains('green') ? 'green' : 'red';
+        if (cardColor !== this.currentPlayer) {
+            e.preventDefault();
+            return;
+        }
+        
+        this.draggedCard = e.target.dataset.cardId;
+        e.target.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+    }
+
+    handleDragEnd(e) {
+        e.target.classList.remove('dragging');
+        this.draggedCard = null;
+    }
+
+    // Mobile touch support methods
+    handleCardTouch(e, card) {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        if (!this.gameActive) return;
+        
+        // Only allow selection if it's the current player's turn
+        const cardColor = card.color;
+        if (cardColor !== this.currentPlayer || card.used) {
+            return;
+        }
+        
+        // Toggle card selection
+        if (this.selectedCard && this.selectedCard.id === card.id) {
+            // Deselect if clicking the same card
+            this.selectedCard = null;
+            this.updateCardSelection();
         } else {
+            // Select new card
+            this.selectedCard = card;
+            this.updateCardSelection();
+        }
+    }
+
+    handleCellTouchStart(e) {
+        // Prevent default behavior
+        e.preventDefault();
+    }
+
+    handleCellTouchEnd(e) {
+        e.preventDefault();
+        
+        if (!this.gameActive || !this.selectedCard) return;
+        
+        // Find the cell element
+        let cellElement = e.target;
+        while (cellElement && !cellElement.classList.contains('cell')) {
+            cellElement = cellElement.parentElement;
+        }
+        
+        if (!cellElement) return;
+        
+        const cellIndex = parseInt(cellElement.dataset.index);
+        
+        // Check if valid placement
+        const card = this.selectedCard;
+        const currentPiece = this.board[cellIndex];
+        
+        // Can't place on locked tiles
+        if (this.replacedTiles.has(cellIndex)) {
+            this.selectedCard = null;
+            this.updateCardSelection();
+            return;
+        }
+        
+        if (currentPiece === '') {
+            // Empty cell - can place
+            this.makeMove(cellIndex, card);
+            this.selectedCard = null;
+            this.updateCardSelection();
+        } else if (typeof currentPiece === 'number') {
+            const currentColor = this.getCellColor(cellIndex);
+            if (currentColor !== this.currentPlayer && card.number > currentPiece) {
+                // Can overwrite enemy piece
+                this.makeMove(cellIndex, card);
+                this.selectedCard = null;
+                this.updateCardSelection();
+            }
+        }
+    }
+
+    updateCardSelection() {
+        // Update visual feedback for selected card
+        const cards = document.querySelectorAll('.card');
+        cards.forEach(cardElement => {
+            const cardId = cardElement.dataset.cardId;
+            const card = this.findCardById(cardId);
+            
+            if (this.selectedCard && cardId === this.selectedCard.id) {
+                cardElement.classList.add('selected');
+                cardElement.style.transform = 'scale(1.15)';
+                cardElement.style.borderColor = '#667eea';
+                cardElement.style.borderWidth = '4px';
+            } else {
+                cardElement.classList.remove('selected');
+                cardElement.style.transform = '';
+                cardElement.style.borderColor = '';
+                cardElement.style.borderWidth = '';
+            }
+        });
+    }
+
+    handleDragOver(e) {
+        if (!this.gameActive) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+    }
+
+    handleDragEnter(e) {
+        if (!this.gameActive) return;
+        e.preventDefault();
+        
+        // Find the cell element (in case we're hovering over a child element like span)
+        let cellElement = e.target;
+        while (cellElement && !cellElement.classList.contains('cell')) {
+            cellElement = cellElement.parentElement;
+        }
+        
+        if (!cellElement) return;
+        
+        const cellIndex = parseInt(cellElement.dataset.index);
+        const cardId = this.draggedCard;
+        const card = this.findCardById(cardId);
+        
+        if (!card || card.used || card.color !== this.currentPlayer) return;
+        
+        // Check if we can place the card here
+        const currentPiece = this.board[cellIndex];
+        let canPlace = false;
+        let canOverwrite = false;
+        
+        // Can't place on locked tiles (tiles that have been replaced)
+        if (this.replacedTiles.has(cellIndex)) {
+            return; // Can't place on locked tiles
+        }
+        
+        if (currentPiece === '') {
+            canPlace = true;
+        } else if (typeof currentPiece === 'number') {
+            const currentColor = this.getCellColor(cellIndex);
+            
+            if (currentColor !== this.currentPlayer && card.number > currentPiece) {
+                canPlace = true;
+                canOverwrite = true;
+            }
+        }
+        
+        if (canPlace) {
+            cellElement.classList.add('drag-over');
+            if (canOverwrite) {
+                cellElement.classList.add('can-overwrite');
+            }
+        }
+    }
+
+    handleDragLeave(e) {
+        // Find the cell element (in case we're leaving a child element like span)
+        let cellElement = e.target;
+        while (cellElement && !cellElement.classList.contains('cell')) {
+            cellElement = cellElement.parentElement;
+        }
+        
+        if (cellElement) {
+            cellElement.classList.remove('drag-over', 'can-overwrite');
+        }
+    }
+
+    handleDrop(e) {
+        if (!this.gameActive) return;
+        
+        e.preventDefault();
+        
+        // Find the cell element (in case we dropped on a child element like span)
+        let cellElement = e.target;
+        while (cellElement && !cellElement.classList.contains('cell')) {
+            cellElement = cellElement.parentElement;
+        }
+        
+        if (!cellElement) {
+            console.error('handleDrop - Could not find cell element');
+            return;
+        }
+        
+        cellElement.classList.remove('drag-over', 'can-overwrite');
+        
+        const cellIndex = parseInt(cellElement.dataset.index);
+        const cardId = this.draggedCard;
+        const card = this.findCardById(cardId);
+        
+        console.log('handleDrop - e.target:', e.target);
+        console.log('handleDrop - cellElement:', cellElement);
+        console.log('handleDrop - dataset.index:', cellElement.dataset.index);
+        console.log('handleDrop - cellIndex:', cellIndex);
+        console.log('handleDrop - cardId:', cardId);
+        console.log('handleDrop - card:', card);
+        
+        // Validate cell index
+        if (isNaN(cellIndex) || cellIndex < 0 || cellIndex > 15) {
+            console.error('handleDrop - Invalid cell index:', cellIndex);
+            return;
+        }
+        
+        if (!card || card.used || card.color !== this.currentPlayer) {
+            console.log('handleDrop - Invalid card or not current player');
+            return;
+        }
+        
+        // Check if we can place the card (empty cell or overwriting with higher number)
+        const currentPiece = this.board[cellIndex];
+        
+        // Can't place on locked tiles (tiles that have been replaced)
+        if (this.replacedTiles.has(cellIndex)) {
+            console.log('handleDrop - Cannot place on locked tile');
+            return;
+        }
+        
+        if (currentPiece !== '' && typeof currentPiece === 'number') {
+            // There's already a piece here, check if we can overwrite it
+            const currentColor = this.getCellColor(cellIndex);
+            
+            // Can only overwrite enemy pieces, and only with higher numbers
+            if (currentColor === this.currentPlayer || card.number <= currentPiece) {
+                return; // Can't overwrite
+            }
+        }
+        
+        this.makeMove(cellIndex, card);
+    }
+
+    findCardById(cardId) {
+        for (let color in this.playerDecks) {
+            const card = this.playerDecks[color].find(c => c.id === cardId);
+            if (card) return card;
+        }
+        return null;
+    }
+
+    makeMove(index, card) {
+        if (!this.gameActive) return;
+
+        // For online mode, check if it's our turn
+        if (this.gameMode === 'online' && this.currentPlayer !== this.myPlayerColor) {
+            return; // Not our turn
+        }
+        
+        console.log(`makeMove(${index}, ${card.number}, ${card.color}) - Before: board[${index}] = ${this.board[index]}`);
+        
+        // Check if we're overwriting an enemy piece
+        const isOverwriting = this.board[index] !== '';
+        const previousPiece = this.board[index];
+        
+        // Track if this tile has been replaced before
+        if (isOverwriting) {
+            this.replacedTiles.add(index);
+        }
+        
+        this.board[index] = card.number;
+        card.used = true;
+        
+        console.log(`makeMove(${index}, ${card.number}, ${card.color}) - After: board[${index}] = ${this.board[index]}`);
+        console.log(`makeMove - Full board state:`, [...this.board]);
+        
+        const cell = document.querySelector(`[data-index="${index}"]`);
+        
+        // Validate that we found the cell element
+        if (!cell) {
+            console.error(`makeMove - Could not find cell with index ${index}`);
+            return;
+        }
+        
+        // Add overwrite animation if we're replacing a piece
+        if (isOverwriting) {
+            cell.classList.add('overwriting');
             setTimeout(() => {
-                this.waitForFirebase(callback, attempts + 1);
+                cell.classList.remove('overwriting');
+            }, 300);
+        }
+        
+        cell.innerHTML = `<span class="number">${card.number}</span>`;
+        cell.className = `cell ${card.color}`; // Reset classes and add new color
+        
+        // Store the cell color for online multiplayer
+        this.storedCellColors[index] = card.color;
+        
+        // Add locked class if this tile has been replaced
+        if (this.replacedTiles.has(index)) {
+            cell.classList.add('locked');
+        }
+        
+        const winResult = this.checkWin();
+        if (winResult) {
+            this.endGame(winResult);
+            // Sync final state
+            if (this.gameMode === 'online' && this.firebaseEnabled) {
+                this.syncGameStateToFirebase();
+            }
+            return;
+        }
+        
+        if (this.checkDraw()) {
+            this.endGame('draw');
+            if (this.gameMode === 'online' && this.firebaseEnabled) {
+                this.syncGameStateToFirebase();
+            }
+            return;
+        }
+        
+        // Check for automatic draw when both players run out of playable cards
+        if (this.checkAutomaticDraw()) {
+            this.endGame('draw');
+            if (this.gameMode === 'online' && this.firebaseEnabled) {
+                this.syncGameStateToFirebase();
+            }
+            return;
+        }
+        
+        this.switchPlayer();
+        this.updateCurrentPlayerDisplay();
+        this.updatePlayerDeck();
+        
+        // Sync to Firebase for online mode
+        if (this.gameMode === 'online' && this.firebaseEnabled) {
+            this.syncGameStateToFirebase();
+        }
+        
+    }
+
+    // AI functions removed - AI mode no longer supported
+
+    canPlaceCard(index, card) {
+        const currentPiece = this.board[index];
+        const currentColor = this.getCellColor(index);
+        
+        console.log(`canPlaceCard(${index}, ${card.number}): board[${index}]=${currentPiece}, color=${currentColor}, currentPlayer=${this.currentPlayer}`);
+        
+        // Can't place on locked tiles (tiles that have been replaced)
+        if (this.replacedTiles.has(index)) {
+            console.log(`  -> Locked tile, denying placement`);
+            return false;
+        }
+        
+        if (currentPiece === '') {
+            console.log(`  -> Empty cell, allowing placement`);
+            return true; // Empty cell
+        }
+        
+        if (typeof currentPiece === 'number') {
+            const canOverwrite = currentColor !== this.currentPlayer && card.number > currentPiece;
+            console.log(`  -> Can overwrite: ${canOverwrite} (color different: ${currentColor !== this.currentPlayer}, higher number: ${card.number > currentPiece})`);
+            return canOverwrite;
+        }
+        
+        console.log(`  -> Not a number, denying placement`);
+        return false;
+    }
+
+    getCellColor(index) {
+        const cell = document.querySelector(`[data-index="${index}"]`);
+        if (!cell) return '';
+        if (cell.classList.contains('green')) return 'green';
+        if (cell.classList.contains('red')) return 'red';
+        return '';
+    }
+
+    setCellColor(index, color) {
+        const cell = document.querySelector(`[data-index="${index}"]`);
+        if (!cell) return;
+        cell.className = `cell ${color}`;
+    }
+
+
+    evaluateBoard() {
+        // Check for immediate win
+        const winResult = this.checkWin();
+        if (winResult === 'red') return 100;
+        if (winResult === 'green') return -100;
+        
+        // Heuristic: prefer center and corners
+        let score = 0;
+        const centerPositions = [5, 6, 9, 10]; // Center 4 positions in 4x4
+        centerPositions.forEach(pos => {
+            if (this.board[pos] && typeof this.board[pos] === 'number') {
+                score += 10;
+            }
+        });
+        
+        const corners = [0, 3, 12, 15]; // Corners in 4x4
+        corners.forEach(index => {
+            if (this.board[index] && typeof this.board[index] === 'number') {
+                score += 5;
+            }
+        });
+        
+        return score;
+    }
+
+
+    switchPlayer() {
+        this.currentPlayer = this.currentPlayer === 'green' ? 'red' : 'green';
+    }
+
+    checkWin() {
+        for (let combination of this.winningCombinations) {
+            const [a, b, c, d] = combination;
+            if (this.board[a] && this.board[b] && this.board[c] && this.board[d]) {
+                // Check if all four cells have the same color
+                const cellA = document.querySelector(`[data-index="${a}"]`);
+                const cellB = document.querySelector(`[data-index="${b}"]`);
+                const cellC = document.querySelector(`[data-index="${c}"]`);
+                const cellD = document.querySelector(`[data-index="${d}"]`);
+                
+                if (cellA.classList.contains('green') && cellB.classList.contains('green') && cellC.classList.contains('green') && cellD.classList.contains('green')) {
+                    this.highlightWinningCells(combination);
+                    return 'green';
+                }
+                if (cellA.classList.contains('red') && cellB.classList.contains('red') && cellC.classList.contains('red') && cellD.classList.contains('red')) {
+                    this.highlightWinningCells(combination);
+                    return 'red';
+                }
+            }
+        }
+        return false;
+    }
+
+    checkWinForSimulation() {
+        // Same as checkWin but without highlighting (for AI simulation)
+        for (let combination of this.winningCombinations) {
+            const [a, b, c, d] = combination;
+            if (this.board[a] && this.board[b] && this.board[c] && this.board[d]) {
+                const cellA = document.querySelector(`[data-index="${a}"]`);
+                const cellB = document.querySelector(`[data-index="${b}"]`);
+                const cellC = document.querySelector(`[data-index="${c}"]`);
+                const cellD = document.querySelector(`[data-index="${d}"]`);
+                
+                if (cellA.classList.contains('green') && cellB.classList.contains('green') && cellC.classList.contains('green') && cellD.classList.contains('green')) {
+                    return 'green';
+                }
+                if (cellA.classList.contains('red') && cellB.classList.contains('red') && cellC.classList.contains('red') && cellD.classList.contains('red')) {
+                    return 'red';
+                }
+            }
+        }
+        return false;
+    }
+
+    highlightWinningCells(combination) {
+        combination.forEach(index => {
+            const cell = document.querySelector(`[data-index="${index}"]`);
+            cell.classList.add('winning');
+        });
+    }
+
+    checkDraw() {
+        return this.board.every(cell => cell !== '');
+    }
+
+    hasPlayableCards(playerColor) {
+        const availableCards = this.playerDecks[playerColor].filter(card => !card.used);
+        
+        // Check if any available card can be placed on any empty cell or can overwrite an enemy piece
+        for (let card of availableCards) {
+            for (let i = 0; i < 16; i++) {
+                if (this.canPlaceCard(i, card)) {
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    checkAutomaticDraw() {
+        const greenHasPlayableCards = this.hasPlayableCards('green');
+        const redHasPlayableCards = this.hasPlayableCards('red');
+        
+        // If both players have no playable cards, it's an automatic draw
+        if (!greenHasPlayableCards && !redHasPlayableCards) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    endGame(result) {
+        this.gameActive = false;
+        
+        // Reset ready status when game ends (for online multiplayer)
+        this.player1Ready = false;
+        this.player2Ready = false;
+        
+        if (result === 'draw') {
+            this.scores.draws++;
+            // Check if it's an automatic draw due to no playable cards
+            if (this.checkAutomaticDraw()) {
+                this.gameResult = { type: 'draw', message: 'Automatic Draw! Both players ran out of playable cards! 🤝' };
+                this.showResult(this.gameResult.message);
+            } else {
+                this.gameResult = { type: 'draw', message: 'It\'s a Draw! 🤝' };
+                this.showResult(this.gameResult.message);
+            }
+        } else {
+            this.scores[result]++;
+            let winnerName;
+            if (this.gameMode === 'online') {
+                // For online, show if you won or lost using names
+                const isWinner = result === this.myPlayerColor;
+                if (isWinner) {
+                    winnerName = 'You';
+                } else {
+                    // Opponent won - opponentName is always the other player's name
+                    winnerName = this.opponentName || 'Opponent';
+                }
+            } else {
+                winnerName = `Player ${result === 'green' ? '1' : '2'}`;
+            }
+            this.gameResult = { type: 'win', winner: result, message: `${winnerName} Wins! 🎉` };
+            this.showResult(this.gameResult.message);
+        }
+        
+        this.updateScoreDisplay();
+        
+        // Sync to Firebase for online mode
+        if (this.gameMode === 'online' && this.firebaseEnabled) {
+            this.syncGameStateToFirebase();
+        }
+    }
+
+    showResult(message) {
+        document.getElementById('resultMessage').textContent = message;
+        document.getElementById('gameResult').style.display = 'flex';
+        
+        // Show emote section only for online multiplayer
+        const emoteSection = document.getElementById('emoteSection');
+        
+        // Update ready status display for online multiplayer
+        if (this.gameMode === 'online' && !this.gameActive) {
+            // Use setTimeout to ensure DOM is updated first
+            setTimeout(() => {
+                this.updateReadyStatusDisplay();
+                this.updateEmoteDisplay(); // Also update emote display when showing result
             }, 100);
         }
-    }
-
-    // Get or create a unique family ID for syncing
-    getOrCreateFamilyId() {
-        let familyId = localStorage.getItem('tvTimeFamilyId');
-        if (!familyId) {
-            // Generate a unique family ID (you can share this with other phones)
-            familyId = 'family_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-            localStorage.setItem('tvTimeFamilyId', familyId);
-        }
-        return familyId;
-    }
-
-    // Initialize Firebase connection
-    initializeFirebase() {
-        // Check if db is available (might take a moment for scripts to load)
-        const checkFirebase = () => {
-            if (typeof window !== 'undefined' && typeof db !== 'undefined' && db !== null) {
-                this.firebaseEnabled = true;
-                console.log('Firebase sync enabled for family:', this.familyId);
-                
-                // Listen for real-time updates from other devices
-                db.collection('families').doc(this.familyId)
-                    .onSnapshot((docSnapshot) => {
-                        if (docSnapshot.exists) {
-                            const data = docSnapshot.data();
-                            
-                            // Sync custom chores
-                            if (data.customChores) {
-                                this.customChores = data.customChores;
-                                this.updateChoresList();
-                                localStorage.setItem('tvTimeCustomChores', JSON.stringify(this.customChores));
-                                // Refresh chores display if it's currently open
-                                if (document.getElementById('choresList').style.display !== 'none') {
-                                    this.renderChores();
-                                }
-                            }
-                            
-                            if (data.children) {
-                                // Don't overwrite if we're currently processing the daily bonus
-                                if (this.isProcessingBonus) {
-                                    console.log('Ignoring cloud sync - processing daily bonus');
-                                    return;
-                                }
-                                
-                                const cloudChildren = data.children;
-                                const cloudLastMidnightCheck = data.lastMidnightCheck;
-                            
-                            // Get local lastMidnightCheck
-                            const localLastMidnightCheck = this.loadLastMidnightCheck();
-                            const today = new Date();
-                            today.setHours(0, 0, 0, 0);
-                            
-                            // Parse dates for comparison
-                            let cloudDate = null;
-                            if (cloudLastMidnightCheck) {
-                                const parsed = new Date(cloudLastMidnightCheck);
-                                if (!isNaN(parsed.getTime())) {
-                                    parsed.setHours(0, 0, 0, 0);
-                                    cloudDate = parsed;
-                                }
-                            }
-                            
-                            let localDate = null;
-                            if (localLastMidnightCheck) {
-                                const parsed = new Date(localLastMidnightCheck);
-                                if (!isNaN(parsed.getTime())) {
-                                    parsed.setHours(0, 0, 0, 0);
-                                    localDate = parsed;
-                                }
-                            }
-                            
-                            // If we've already processed today's bonus locally, don't overwrite with older cloud data
-                            if (localDate && localDate.getTime() === today.getTime()) {
-                                // We've processed today locally - check if cloud data is also from today
-                                if (!cloudDate || cloudDate.getTime() < today.getTime()) {
-                                    console.log('Ignoring cloud sync - local data has today\'s bonus, cloud data is older');
-                                    return;
-                                }
-                            }
-                            
-                                // Merge with local data (cloud takes precedence, but preserve today's bonus if we have it)
-                                this.children = cloudChildren;
-                                this.saveToLocalStorage();
-                                this.renderChildren();
-                                console.log('Synced from cloud');
-                            }
-                        }
-                    }, (error) => {
-                        console.error('Firebase sync error:', error);
-                    });
-                
-                this.updateSyncStatus();
-                return true;
-            }
-            return false;
-        };
-        
-        // Try immediately
-        if (!checkFirebase()) {
-            // If not ready yet, try again after a short delay
-            setTimeout(() => {
-                if (!checkFirebase()) {
-                    console.log('Firebase not configured - running in local-only mode');
-                    this.updateSyncStatus();
-                }
-            }, 500);
-        }
-    }
-
-    async loadChildren() {
-        if (this.firebaseEnabled) {
-            try {
-                const docSnapshot = await db.collection('families').doc(this.familyId).get();
-                if (docSnapshot.exists && docSnapshot.data().children) {
-                    this.children = docSnapshot.data().children;
-                    this.saveToLocalStorage();
-                    return this.children;
-                }
-            } catch (error) {
-                console.error('Error loading from Firebase:', error);
-                // Fall back to localStorage
+        if (emoteSection) {
+            if (this.gameMode === 'online') {
+                emoteSection.style.display = 'block';
+            } else {
+                emoteSection.style.display = 'none';
             }
         }
+    }
+
+    updateCurrentPlayerDisplay() {
+        const playerColorIndicator = document.getElementById('playerColorIndicator');
+        const playerName = document.getElementById('playerName');
         
-        // Fall back to localStorage
-        const stored = localStorage.getItem('tvTimeChildren');
-        this.children = stored ? JSON.parse(stored) : [];
-        return this.children;
+        playerColorIndicator.className = `player-color-indicator ${this.currentPlayer}`;
+        
+        if (this.gameMode === 'online') {
+            // Show which player's turn using names
+            if (this.myPlayerColor) {
+                const isMyTurn = this.currentPlayer === this.myPlayerColor;
+                const currentPlayerName = this.currentPlayer === 'green' 
+                    ? (this.myPlayerColor === 'green' ? this.myPlayerName : this.opponentName)
+                    : (this.myPlayerColor === 'red' ? this.myPlayerName : this.opponentName);
+                
+                if (isMyTurn) {
+                    playerName.textContent = `Your Turn`;
+                } else {
+                    playerName.textContent = `${currentPlayerName}'s Turn`;
+                }
+            } else {
+            playerName.textContent = `${this.currentPlayer === 'green' ? 'Green' : 'Red'} Player's Turn`;
+            }
+        } else {
+            playerName.textContent = `Player ${this.currentPlayer === 'green' ? '1' : '2'}'s Turn`;
+        }
+    }
+
+    updateScoreDisplay() {
+        document.getElementById('playerWins').textContent = this.scores.green;
+        document.getElementById('opponentWins').textContent = this.scores.red;
+        document.getElementById('draws').textContent = this.scores.draws;
+        
+        // Update scoreboard labels with player names for online mode
+        const playerWinsLabel = document.querySelector('.game-stats .stat:nth-child(1) .stat-label');
+        const opponentWinsLabel = document.querySelector('.game-stats .stat:nth-child(3) .stat-label');
+        
+        if (playerWinsLabel && opponentWinsLabel) {
+            if (this.gameMode === 'online') {
+                // Green player label (top)
+                const greenPlayerName = this.myPlayerColor === 'green' ? this.myPlayerName : this.opponentName;
+                playerWinsLabel.textContent = `${greenPlayerName} Wins:`;
+                
+                // Red player label (bottom)
+                const redPlayerName = this.myPlayerColor === 'red' ? this.myPlayerName : this.opponentName;
+                opponentWinsLabel.textContent = `${redPlayerName} Wins:`;
+            } else {
+                playerWinsLabel.textContent = 'Player Wins:';
+                opponentWinsLabel.textContent = 'Player2 Wins:';
+            }
+        }
+    }
+
+    updateDisplay() {
+        this.updateScoreDisplay();
+    }
+
+    resetGame() {
+        // For online multiplayer, require both players to click "Play Again"
+        if (this.gameMode === 'online') {
+            // Mark this player as ready
+            if (this.myPlayerColor === 'green') {
+                this.player1Ready = true;
+            } else {
+                this.player2Ready = true;
+            }
+            
+            // Check if both players are ready
+            const bothReady = this.player1Ready && this.player2Ready;
+            
+            // Sync ready status to Firebase
+            this.syncGameStateToFirebase();
+            this.updateReadyStatusDisplay();
+            
+            // If both players are ready, start the new game
+            if (bothReady) {
+                // Reset the game state
+                this.resetBoard();
+                this.gameActive = true;
+                this.gameResult = null;
+                this.player1Ready = false; // Reset ready status
+                this.player2Ready = false; // Reset ready status
+                
+                // Deterministically determine starting player (alternate based on scores to be fair)
+                // If scores are equal, randomly pick; otherwise alternate
+                const totalGames = this.scores.green + this.scores.red + this.scores.draws;
+                this.currentPlayer = (totalGames % 2 === 0) ? 'green' : 'red';
+                
+                // Hide result screen, show game
+                document.getElementById('gameResult').style.display = 'none';
+                document.getElementById('gameContainer').style.display = 'block';
+                
+                // Sync new game state to Firebase
+                this.syncGameStateToFirebase();
+                
+                // Update display
+                this.updateCurrentPlayerDisplay();
+                this.updatePlayerDeck();
+            }
+            // If not both ready, the ready status display will show who is waiting
+        } else {
+            // For AI and local multiplayer, show coin flip
+        document.getElementById('gameResult').style.display = 'none';
+        document.getElementById('gameContainer').style.display = 'none';
+        document.getElementById('coinFlipContainer').style.display = 'block';
+        
+        this.performCoinFlip();
+        }
     }
     
-    async loadCustomChores() {
-        try {
-            if (this.firebaseEnabled && typeof db !== 'undefined' && db !== null) {
-                try {
-                    const docSnapshot = await db.collection('families').doc(this.familyId).get();
-                    if (docSnapshot.exists && docSnapshot.data().customChores) {
-                        this.customChores = docSnapshot.data().customChores;
-                        this.updateChoresList();
+    updateReadyStatusDisplay() {
+        if (this.gameMode !== 'online' || this.gameActive) return;
+        
+        const playAgainBtn = document.querySelector('#gameResult .control-btn[onclick="resetGame()"]');
+        if (!playAgainBtn) return;
+        
+        // Check if we're ready
+        const iAmReady = (this.myPlayerColor === 'green' && this.player1Ready) ||
+                         (this.myPlayerColor === 'red' && this.player2Ready);
+        const opponentReady = (this.myPlayerColor === 'green' && this.player2Ready) ||
+                             (this.myPlayerColor === 'red' && this.player1Ready);
+        
+        // Update button text
+        if (iAmReady && opponentReady) {
+            playAgainBtn.textContent = 'Starting new game...';
+            playAgainBtn.disabled = true;
+        } else if (iAmReady) {
+            playAgainBtn.textContent = 'Waiting for opponent...';
+            playAgainBtn.disabled = true;
+        } else {
+            playAgainBtn.textContent = 'Play Again';
+            playAgainBtn.disabled = false;
+        }
+        
+        // Show status message if not both ready
+        let statusMsg = document.getElementById('readyStatusMsg');
+        if (!statusMsg) {
+            statusMsg = document.createElement('p');
+            statusMsg.id = 'readyStatusMsg';
+            statusMsg.style.cssText = 'font-size: 14px; color: #7F8C8D; margin-top: 10px; text-align: center;';
+            playAgainBtn.parentNode.insertBefore(statusMsg, playAgainBtn.nextSibling);
+        }
+        
+        if (iAmReady && !opponentReady) {
+            const opponentName = this.opponentName || 'Opponent';
+            statusMsg.textContent = `Waiting for ${opponentName} to click "Play Again"...`;
+            statusMsg.style.display = 'block';
+        } else if (!iAmReady && opponentReady) {
+            statusMsg.textContent = 'Your opponent is ready! Click "Play Again" to start a new game.';
+            statusMsg.style.display = 'block';
+        } else if (!iAmReady && !opponentReady) {
+            statusMsg.style.display = 'none';
+        } else {
+            statusMsg.style.display = 'none';
+        }
+    }
+
+    changeGameMode() {
+        // Clean up Firebase listener if active
+        if (this.gameUnsubscribe) {
+            this.gameUnsubscribe();
+            this.gameUnsubscribe = null;
+        }
+
+        // Close any modals
+        document.getElementById('gameRoomModal').style.display = 'none';
+        document.getElementById('waitingRoomModal').style.display = 'none';
+
+        document.getElementById('gameContainer').style.display = 'none';
+        document.getElementById('gameResult').style.display = 'none';
+        document.getElementById('coinFlipContainer').style.display = 'none';
+        document.getElementById('gameModeSelection').style.display = 'block';
+        this.gameMode = null;
+        this.gameRoomId = null;
+        this.myPlayerColor = null;
+        
+        // Clear URL parameters when changing mode
+        if (window.history.replaceState) {
+            const url = new URL(window.location);
+            url.searchParams.delete('state');
+            window.history.replaceState({}, '', url);
+        }
+    }
+
+    // Firebase Online Multiplayer Methods
+    createGameRoom() {
+        if (!this.firebaseEnabled) {
+            alert('Firebase not available. Please ensure you are accessing via HTTPS.');
+            return;
+        }
+
+        // Get player name from input
+        const nameInput = document.getElementById('playerNameInput');
+        this.myPlayerName = nameInput.value.trim() || 'Player 1';
+        if (this.myPlayerName.length > 15) {
+            this.myPlayerName = this.myPlayerName.substring(0, 15);
+        }
+
+        // Generate unique room ID (just numbers, 6 digits)
+        this.myPlayerColor = 'green'; // Creator is always green
+        this.gameMode = 'online';
+        this.opponentName = 'Waiting...'; // Will be set when player 2 joins
+
+        // Reset board for new game
+        this.resetBoard();
+        // Randomly determine starting player
+        this.currentPlayer = Math.random() < 0.5 ? 'green' : 'red';
+
+        // Create game room with unique 6-digit number
+        this.createUniqueRoom().then(() => {
+            // Close modals, show waiting room
+            document.getElementById('gameRoomModal').style.display = 'none';
+            document.getElementById('waitingRoomModal').style.display = 'block';
+            document.getElementById('gameRoomIdDisplay').value = this.gameRoomId;
+
+            // Listen for player 2 to join
+            this.listenForPlayerJoin();
+
+            // Update status
+            document.getElementById('roomStatus').textContent = 'Room created! Share the ID.';
+        }).catch(error => {
+            console.error('Error creating game room:', error);
+            alert('Failed to create game room. Please try again.');
+        });
+    }
+
+    createUniqueRoom() {
+        // Try to create a room with a unique 6-digit number
+        const tryCreateRoom = (attempts = 0) => {
+            if (attempts > 10) {
+                // Fallback to timestamp-based ID if too many attempts
+                this.gameRoomId = Date.now().toString();
+            } else {
+                // Generate 6-digit number (100000 to 999999)
+                const roomNumber = Math.floor(100000 + Math.random() * 900000);
+                this.gameRoomId = roomNumber.toString();
+            }
+
+            // Check if room already exists
+            return db.collection('gameRooms').doc(this.gameRoomId).get().then(doc => {
+                if (doc.exists && doc.data().status !== 'finished') {
+                    // Room exists and is active, try again
+                    if (attempts < 10) {
+                        return tryCreateRoom(attempts + 1);
                     } else {
-                        this.customChores = [];
-                        this.updateChoresList();
+                        // Use timestamp as fallback
+                        this.gameRoomId = Date.now().toString();
+                        return this.createRoomInFirebase();
                     }
-                    return this.customChores;
-                } catch (error) {
-                    console.error('Error loading custom chores from Firebase:', error);
-                    // Fall through to localStorage
+                } else {
+                    // Room doesn't exist or is finished, use this ID
+                    return this.createRoomInFirebase();
                 }
-            }
-            // Fall back to localStorage
-            const stored = localStorage.getItem('tvTimeCustomChores');
-            this.customChores = stored ? JSON.parse(stored) : [];
-            this.updateChoresList();
-            return this.customChores;
-        } catch (error) {
-            console.error('Error in loadCustomChores:', error);
-            this.customChores = [];
-            this.updateChoresList();
-            return this.customChores;
-        }
-    }
-    
-    updateChoresList() {
-        // Combine default and custom chores
-        this.chores = [...this.defaultChores, ...this.customChores];
-    }
-    
-    async saveCustomChores() {
-        // Always save to localStorage first
-        localStorage.setItem('tvTimeCustomChores', JSON.stringify(this.customChores));
-        
-        // Then sync to Firebase
-        if (this.firebaseEnabled) {
-            db.collection('families').doc(this.familyId).set({
-                customChores: this.customChores,
-                lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-            }, { merge: true })
-            .then(() => {
-                console.log('Custom chores synced to cloud');
-            })
-            .catch((error) => {
-                console.error('Error syncing custom chores to Firebase:', error);
             });
-        }
-    }
-
-    saveChildren() {
-        // Always save to localStorage first (instant)
-        this.saveToLocalStorage();
-        
-        // Then sync to Firebase (if enabled)
-        if (this.firebaseEnabled) {
-            db.collection('families').doc(this.familyId).set({
-                children: this.children,
-                lastUpdated: firebase.firestore.FieldValue.serverTimestamp(),
-                lastMidnightCheck: this.loadLastMidnightCheck()
-            }, { merge: true })
-            .then(() => {
-                console.log('Synced to cloud');
-            })
-            .catch((error) => {
-                console.error('Error syncing to Firebase:', error);
-            });
-        }
-    }
-
-    saveToLocalStorage() {
-        localStorage.setItem('tvTimeChildren', JSON.stringify(this.children));
-    }
-
-    loadLastMidnightCheck() {
-        // Always use localStorage for now (Firebase syncs it separately)
-        // This ensures instant reads without async complexity
-        return localStorage.getItem('lastMidnightCheck') || null;
-    }
-
-    saveLastMidnightCheck(date) {
-        localStorage.setItem('lastMidnightCheck', date);
-        // Also save to Firebase if enabled
-        if (this.firebaseEnabled) {
-            db.collection('families').doc(this.familyId).set({
-                lastMidnightCheck: date
-            }, { merge: true });
-        }
-    }
-
-    initializeApp() {
-        // Service worker registration is now handled by UpdateManager
-
-        // Show sync status
-        this.updateSyncStatus();
-        
-        // Setup Family ID UI
-        this.setupFamilyIdUI();
-
-        // Setup event listeners
-        document.getElementById('addChildBtn').addEventListener('click', () => this.addChild());
-        document.getElementById('childNameInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') this.addChild();
-        });
-        
-        document.getElementById('closeModal').addEventListener('click', () => this.closeModal());
-
-        // Time adjustment controls - Add button (moves right through the array - higher values)
-        document.getElementById('modeAdd').addEventListener('click', () => {
-            // Check if we're at the last item (can't go further)
-            if (this.currentAmountIndex === this.timeAmounts.length - 1) {
-                // Already at maximum (+60), do nothing
-                return;
-            }
-            // Move to next higher value
-            this.currentAmountIndex++;
-            this.currentAmount = this.timeAmounts[this.currentAmountIndex];
-            this.updateAmountDisplay();
-        });
-        
-        // Time adjustment controls - Subtract button (moves left through the array - lower values)
-        document.getElementById('modeSubtract').addEventListener('click', () => {
-            // Check if we're at the first item (can't go further)
-            if (this.currentAmountIndex === 0) {
-                // Already at minimum (-60), do nothing
-                return;
-            }
-            // Move to next lower value
-            this.currentAmountIndex--;
-            this.currentAmount = this.timeAmounts[this.currentAmountIndex];
-            this.updateAmountDisplay();
-        });
-        
-        // Time adjustment controls - Apply button
-        document.getElementById('applyTimeBtn').addEventListener('click', () => {
-            if (this.currentChildId) {
-                const amount = Math.abs(this.currentAmount);
-                // Determine if adding or subtracting based on current amount value
-                if (this.currentAmount > 0) {
-                    this.adjustTime(this.currentChildId, 'add', amount);
-                } else if (this.currentAmount < 0) {
-                    this.adjustTime(this.currentChildId, 'subtract', amount);
-                }
-                // Reset to 0 after applying (only if amount was not 0)
-                if (this.currentAmount !== 0) {
-                    this.currentAmountIndex = 5; // Reset to 0 (index 5)
-                    this.currentAmount = this.timeAmounts[this.currentAmountIndex];
-                    this.updateAmountDisplay();
-                }
-            }
-        });
-        
-        // Chores button - show/hide chores list
-        document.getElementById('showChoresBtn').addEventListener('click', () => {
-            const choresList = document.getElementById('choresList');
-            if (choresList.style.display === 'none') {
-                this.choresEditMode = false; // Reset edit mode when opening
-                this.renderChores();
-                choresList.style.display = 'block';
-                document.getElementById('showChoresBtn').textContent = '❌ Close Chores';
-            } else {
-                choresList.style.display = 'none';
-                document.getElementById('showChoresBtn').textContent = '📋 Chores';
-            }
-        });
-        
-        // Toggle edit mode button
-        document.getElementById('toggleEditModeBtn').addEventListener('click', () => {
-            this.choresEditMode = !this.choresEditMode;
-            this.renderChores();
-        });
-        
-        // Add Chore Modal
-        document.getElementById('closeAddChoreModal').addEventListener('click', () => {
-            this.closeAddChoreModal();
-        });
-        
-        // Save Chore button
-        document.getElementById('saveChoreBtn').addEventListener('click', () => {
-            this.saveNewChore();
-        });
-        
-        // Allow Enter key in name input
-        document.getElementById('choreNameInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                this.saveNewChore();
-            }
-        });
-        
-        // Close modal when clicking outside
-        window.addEventListener('click', (e) => {
-            const addChoreModal = document.getElementById('addChoreModal');
-            if (e.target === addChoreModal) {
-                this.closeAddChoreModal();
-            }
-        });
-
-        // Close modal when clicking outside
-        window.addEventListener('click', (e) => {
-            const modal = document.getElementById('timeModal');
-            if (e.target === modal) {
-                this.closeModal();
-            }
-            const familyModal = document.getElementById('familyModal');
-            if (e.target === familyModal) {
-                this.closeFamilyModal();
-            }
-        });
-
-        // Family Sync Modal button
-        document.getElementById('openFamilyModalBtn').addEventListener('click', () => {
-            this.openFamilyModal();
-        });
-        document.getElementById('closeFamilyModal').addEventListener('click', () => {
-            this.closeFamilyModal();
-        });
-
-        this.renderChildren();
-    }
-
-    addChild() {
-        const input = document.getElementById('childNameInput');
-        const name = input.value.trim();
-        
-        if (!name) {
-            alert('Please enter a child\'s name');
-            return;
-        }
-        
-        // Check if child already exists
-        if (this.children.some(child => child.name.toLowerCase() === name.toLowerCase())) {
-            alert('A child with this name already exists');
-            input.value = '';
-            return;
-        }
-        
-        const newChild = {
-            id: Date.now().toString(),
-            name: name,
-            timeBalance: 0, // Time in minutes
-            createdAt: new Date().toISOString()
         };
 
-        this.children.push(newChild);
-        this.saveChildren();
-        input.value = '';
-        this.renderChildren();
+        return tryCreateRoom();
     }
 
-    deleteChild(id) {
-        if (confirm('Are you sure you want to remove this child?')) {
-            this.children = this.children.filter(child => child.id !== id);
-            this.saveChildren();
-            this.renderChildren();
-        }
-    }
-
-    openTimeModal(childId) {
-        const child = this.children.find(c => c.id === childId);
-        if (!child) return;
-
-        this.currentChildId = childId;
-        this.currentAmountIndex = 5; // Reset to 0 (index 5)
-        this.currentAmount = this.timeAmounts[this.currentAmountIndex];
-        document.getElementById('modalChildName').textContent = child.name;
-        document.getElementById('modalCurrentTime').textContent = this.formatTime(child.timeBalance);
-        this.updateAmountDisplay();
-        // Hide chores list when opening modal
-        document.getElementById('choresList').style.display = 'none';
-        document.getElementById('showChoresBtn').textContent = '📋 Chores';
-        document.getElementById('timeModal').style.display = 'block';
-    }
-    
-    renderChores() {
-        const choresGrid = document.getElementById('choresGrid');
-        const toggleEditBtn = document.getElementById('toggleEditModeBtn');
-        choresGrid.innerHTML = '';
-        
-        // Update edit mode button
-        if (this.choresEditMode) {
-            toggleEditBtn.textContent = '✓';
-            toggleEditBtn.title = 'Done editing';
-            toggleEditBtn.classList.add('edit-mode-active');
-        } else {
-            toggleEditBtn.textContent = '✏️';
-            toggleEditBtn.title = 'Edit chores';
-            toggleEditBtn.classList.remove('edit-mode-active');
-        }
-        
-        // Render all custom chores
-        this.customChores.forEach((chore) => {
-            const choreCard = document.createElement('div');
-            choreCard.className = 'chore-card';
-            
-            if (this.choresEditMode) {
-                // Edit mode - show edit/delete buttons
-                choreCard.innerHTML = `
-                    <div class="chore-card-content">
-                        <div class="chore-name">${this.escapeHtml(chore.name)}</div>
-                        <div class="chore-time">+${this.formatTime(chore.time)}</div>
-                    </div>
-                    <div class="chore-actions">
-                        <button class="chore-edit-btn" data-chore-id="${chore.id}" title="Edit">✏️</button>
-                        <button class="chore-delete-btn" data-chore-id="${chore.id}" title="Delete">🗑️</button>
-                    </div>
-                `;
-                
-                // In edit mode, clicking the card edits it
-                const cardContent = choreCard.querySelector('.chore-card-content');
-                cardContent.addEventListener('click', () => {
-                    this.editChore(chore.id);
-                });
-                
-                // Edit button
-                const editBtn = choreCard.querySelector('.chore-edit-btn');
-                editBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    this.editChore(chore.id);
-                });
-                
-                // Delete button
-                const deleteBtn = choreCard.querySelector('.chore-delete-btn');
-                deleteBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    this.deleteChore(chore.id);
-                });
-            } else {
-                // Normal mode - just show chore, clicking adds time
-                choreCard.innerHTML = `
-                    <div class="chore-card-content">
-                        <div class="chore-name">${this.escapeHtml(chore.name)}</div>
-                        <div class="chore-time">+${this.formatTime(chore.time)}</div>
-                    </div>
-                `;
-                
-                // Click to add time
-                choreCard.addEventListener('click', () => {
-                    if (this.currentChildId) {
-                        this.adjustTime(this.currentChildId, 'add', chore.time);
-                        // Close chores list after selection
-                        document.getElementById('choresList').style.display = 'none';
-                        document.getElementById('showChoresBtn').textContent = '📋 Chores';
-                    }
-                });
-            }
-            
-            choresGrid.appendChild(choreCard);
+    createRoomInFirebase() {
+        // Create game room in Firebase
+        const gameState = this.getGameState();
+        return db.collection('gameRooms').doc(this.gameRoomId).set({
+            player1: 'green',
+            player1Name: this.myPlayerName,
+            player2: null, // Waiting for player 2
+            player2Name: null,
+            gameState: gameState,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            status: 'waiting' // waiting, active, finished
+        }).then(() => {
+            // Close modals, show waiting room
+            document.getElementById('gameRoomModal').style.display = 'none';
+            document.getElementById('waitingRoomModal').style.display = 'block';
+            document.getElementById('gameRoomIdDisplay').value = this.gameRoomId;
         });
-        
-        // Add "Add Chore" card at the end (or first if no chores)
-        const addChoreCard = document.createElement('div');
-        addChoreCard.className = 'chore-card add-chore-card';
-        addChoreCard.innerHTML = `
-            <div class="add-chore-icon">➕</div>
-            <div class="add-chore-text">Add Chore</div>
-        `;
-        addChoreCard.addEventListener('click', () => {
-            this.openAddChoreModal();
-        });
-        choresGrid.appendChild(addChoreCard);
     }
-    
-    editChore(choreId) {
-        const chore = this.customChores.find(c => c.id === choreId);
-        if (!chore) return;
-        
-        this.editingChoreId = choreId;
-        document.getElementById('choreNameInput').value = chore.name;
-        document.getElementById('choreTimeInput').value = chore.time.toString();
-        document.getElementById('addChoreModal').style.display = 'block';
-        document.querySelector('#addChoreModal h2').textContent = 'Edit Chore';
-        document.getElementById('saveChoreBtn').textContent = 'Update Chore';
-        setTimeout(() => {
-            document.getElementById('choreNameInput').focus();
-        }, 100);
-    }
-    
-    deleteChore(choreId) {
-        const chore = this.customChores.find(c => c.id === choreId);
-        if (!chore) return;
-        
-        if (confirm(`Are you sure you want to delete "${chore.name}"?`)) {
-            this.customChores = this.customChores.filter(c => c.id !== choreId);
-            this.updateChoresList();
-            this.saveCustomChores();
-            this.renderChores(); // Refresh display
-        }
-    }
-    
-    openAddChoreModal() {
-        this.editingChoreId = null; // Reset editing state
-        document.getElementById('choreNameInput').value = '';
-        document.getElementById('choreTimeInput').value = '5'; // Reset to default (5 minutes)
-        document.querySelector('#addChoreModal h2').textContent = 'Add Custom Chore';
-        document.getElementById('saveChoreBtn').textContent = 'Save Chore';
-        document.getElementById('addChoreModal').style.display = 'block';
-        // Focus on name input
-        setTimeout(() => {
-            document.getElementById('choreNameInput').focus();
-        }, 100);
-    }
-    
-    closeAddChoreModal() {
-        document.getElementById('addChoreModal').style.display = 'none';
-        document.getElementById('choreNameInput').value = '';
-        document.getElementById('choreTimeInput').value = '5'; // Reset to default (5 minutes)
-        this.editingChoreId = null;
-    }
-    
-    saveNewChore() {
-        const name = document.getElementById('choreNameInput').value.trim();
-        const time = parseInt(document.getElementById('choreTimeInput').value);
-        
-        if (!name) {
-            alert('Please enter a chore name');
+
+    joinGameRoom() {
+        const roomId = document.getElementById('roomIdInput').value.trim();
+        if (!roomId) {
+            alert('Please enter a Game ID');
             return;
         }
-        
-        // Time is from dropdown, so it's always valid (5, 10, 15, 30, or 60)
-        
-        if (this.editingChoreId) {
-            // Editing existing chore
-            const choreIndex = this.customChores.findIndex(c => c.id === this.editingChoreId);
-            if (choreIndex === -1) return;
+
+        // Get player name from input
+        const nameInput = document.getElementById('playerNameInput');
+        this.myPlayerName = nameInput.value.trim() || 'Player 2';
+        if (this.myPlayerName.length > 15) {
+            this.myPlayerName = this.myPlayerName.substring(0, 15);
+        }
+
+        if (!this.firebaseEnabled) {
+            alert('Firebase not available. Please ensure you are accessing via HTTPS.');
+            return;
+        }
+
+        this.gameRoomId = roomId;
+        this.gameMode = 'online';
+
+        // Check if room exists and has space
+        db.collection('gameRooms').doc(roomId).get().then(doc => {
+            if (!doc.exists) {
+                alert('Game room not found. Please check the Game ID.');
+                return;
+            }
+
+            const roomData = doc.data();
+            if (roomData.player2) {
+                alert('This room is already full.');
+                return;
+            }
+
+            if (roomData.status !== 'waiting') {
+                alert('This game has already started or finished.');
+                return;
+            }
+
+            // Join as player 2 (red)
+            this.myPlayerColor = 'red';
+            this.opponentName = roomData.player1Name || 'Player 1'; // Get player 1's name
             
-            // Check if name changed and conflicts with another chore
-            const existingChore = this.customChores[choreIndex];
-            if (existingChore.name.toLowerCase() !== name.toLowerCase()) {
-                if (this.customChores.some(chore => chore.id !== this.editingChoreId && chore.name.toLowerCase() === name.toLowerCase())) {
-                    alert('A chore with this name already exists');
-                    return;
+            // Update scoreboard with names
+            this.updateScoreDisplay();
+            
+            db.collection('gameRooms').doc(roomId).update({
+                player2: 'red',
+                player2Name: this.myPlayerName,
+                status: 'active'
+                // Don't update gameState here - let the listener pick it up from player 1
+            }).then(() => {
+                // Load game state and start listening
+                this.loadGameStateFromFirebase(roomData.gameState);
+                this.setupFirebaseGameListener();
+                
+                // Close modals and start game
+                document.getElementById('gameRoomModal').style.display = 'none';
+                document.getElementById('waitingRoomModal').style.display = 'none';
+        
+        document.getElementById('gameModeSelection').style.display = 'none';
+        document.getElementById('gameContainer').style.display = 'block';
+                document.getElementById('shareGameBtn').style.display = 'none'; // No need to share in Firebase mode
+            }).catch(error => {
+                console.error('Error joining game room:', error);
+                alert('Failed to join game room. Please try again.');
+            });
+        }).catch(error => {
+            console.error('Error checking game room:', error);
+            alert('Failed to connect to game room. Please check your connection.');
+        });
+    }
+
+    listenForPlayerJoin() {
+        db.collection('gameRooms').doc(this.gameRoomId)
+            .onSnapshot((doc) => {
+                if (doc.exists) {
+                    const data = doc.data();
+                    if (data.player2 && data.status === 'active') {
+                        // Player 2 joined! Get their name and start the game
+                        this.opponentName = data.player2Name || 'Player 2';
+                        
+                        // Update scoreboard with names
+                        this.updateScoreDisplay();
+                        
+                        // Player 2 joined! Start the game
+                        document.getElementById('waitingRoomModal').style.display = 'none';
+                        document.getElementById('gameModeSelection').style.display = 'none';
+                        document.getElementById('gameContainer').style.display = 'block';
+                        document.getElementById('shareGameBtn').style.display = 'none';
+                        
+                        // Ensure game is active
+                        this.gameActive = true;
+                        
+                        // Load initial game state
+                        if (data.gameState) {
+                            this.loadGameStateFromFirebase(data.gameState);
+                        } else {
+                            // Initialize game state if it doesn't exist
+                            this.resetBoard();
+                            // Randomly determine starting player
+                            this.currentPlayer = Math.random() < 0.5 ? 'green' : 'red';
+                            this.syncGameStateToFirebase();
+                        }
+                        
+                        // Start listening for game updates
+                        this.setupFirebaseGameListener();
+                        
+                        // Update display
+        this.updateCurrentPlayerDisplay();
+        this.updatePlayerDeck();
+                    }
+                }
+            }, (error) => {
+                console.error('Error listening for player join:', error);
+            });
+    }
+
+    setupFirebaseGameListener() {
+        // Listen for real-time game state updates
+        if (this.gameUnsubscribe) {
+            this.gameUnsubscribe(); // Unsubscribe from previous listener
+        }
+
+        this.gameUnsubscribe = db.collection('gameRooms').doc(this.gameRoomId)
+            .onSnapshot((doc) => {
+                if (!doc.exists) return;
+
+                const data = doc.data();
+                const gameState = data.gameState;
+
+                // Always sync game state from Firebase (it's the source of truth)
+                if (gameState && this.gameMode === 'online') {
+                    // Check if state actually changed before processing to prevent infinite loops
+                    const currentState = this.getGameState();
+                    if (this.hasGameStateChanged(gameState)) {
+                        this.loadGameStateFromFirebase(gameState);
+                    }
+                    
+                    // Also sync player names from room data
+                    if (data.player1Name && this.myPlayerColor === 'green') {
+                        this.opponentName = data.player2Name || 'Player 2';
+                        this.updateScoreDisplay(); // Update scoreboard with names
+                    } else if (data.player2Name && this.myPlayerColor === 'red') {
+                        this.opponentName = data.player1Name || 'Player 1';
+                        this.updateScoreDisplay(); // Update scoreboard with names
+                    }
+                }
+            }, (error) => {
+                console.error('Error listening for game updates:', error);
+            });
+    }
+
+    hasGameStateChanged(newState) {
+        // Check if board, current player, game result, emote, or ready status changed
+        return JSON.stringify(this.board) !== JSON.stringify(newState.board) ||
+               this.currentPlayer !== newState.currentPlayer ||
+               JSON.stringify(this.gameResult) !== JSON.stringify(newState.gameResult) ||
+               this.gameActive !== newState.gameActive ||
+               this.myEmote !== newState.myEmote || // Check for emote changes
+               this.receivedEmote !== newState.receivedEmote || // Check for received emote changes
+               this.player1Ready !== newState.player1Ready || // Check for ready status changes
+               this.player2Ready !== newState.player2Ready; // Check for ready status changes
+    }
+
+    getGameState() {
+        return {
+            board: this.board,
+            currentPlayer: this.currentPlayer,
+            gameActive: this.gameActive,
+            scores: this.scores,
+            replacedTiles: Array.from(this.replacedTiles),
+            playerDecks: this.playerDecks,
+            storedCellColors: this.storedCellColors,
+            gameResult: this.gameResult || null, // Store the result (win/draw) for both players to see
+            player1Emote: (this.myPlayerColor === 'green' ? this.myEmote : this.receivedEmote) || null, // Player 1 (green) emote
+            player2Emote: (this.myPlayerColor === 'red' ? this.myEmote : this.receivedEmote) || null, // Player 2 (red) emote
+            player1Ready: this.player1Ready || false, // Player 1 (green) ready status
+            player2Ready: this.player2Ready || false // Player 2 (red) ready status
+        };
+    }
+
+    loadGameStateFromFirebase(gameState) {
+        if (!gameState) return;
+        
+        // Prevent recursive calls by checking if we're already loading
+        if (this.isLoadingFromFirebase) {
+            return;
+        }
+        this.isLoadingFromFirebase = true;
+
+        try {
+            // Store previous state to detect changes
+            const previousBoard = JSON.stringify(this.board);
+            const previousCurrentPlayer = this.currentPlayer;
+            const wasGameActive = this.gameActive;
+            
+            // Always restore full game state from Firebase (Firebase is the source of truth)
+            // This ensures turns switch correctly for both players
+            this.board = gameState.board || ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
+            const newCurrentPlayer = gameState.currentPlayer || 'green';
+            this.currentPlayer = newCurrentPlayer; // ALWAYS sync currentPlayer from Firebase
+            this.gameActive = gameState.gameActive !== false;
+            this.scores = gameState.scores || { green: 0, red: 0, draws: 0 };
+            this.replacedTiles = new Set(gameState.replacedTiles || []);
+            this.storedCellColors = gameState.storedCellColors || ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
+            this.playerDecks = gameState.playerDecks || {
+                green: this.createDeck('green'),
+                red: this.createDeck('red')
+            };
+            this.gameResult = gameState.gameResult || null; // Sync game result
+            this.player1Ready = gameState.player1Ready || false; // Sync ready status
+            this.player2Ready = gameState.player2Ready || false; // Sync ready status
+            
+            // If game is active (new game started), always hide result screen and show game
+            // This ensures both players see the game board when a new game starts
+            if (this.gameActive && this.gameMode === 'online' && !this.gameResult) {
+                const gameResultEl = document.getElementById('gameResult');
+                const gameContainerEl = document.getElementById('gameContainer');
+                
+                // Always hide result screen when game is active and there's no result
+                // This prevents the result screen from blocking gameplay after both players join a new game
+                if (gameResultEl) {
+                    gameResultEl.style.display = 'none';
+                }
+                if (gameContainerEl) {
+                    gameContainerEl.style.display = 'block';
+                }
+            } else if (!wasGameActive && this.gameActive && this.gameMode === 'online') {
+                // Fallback: if game just became active, also ensure result screen is hidden
+                const gameResultEl = document.getElementById('gameResult');
+                const gameContainerEl = document.getElementById('gameContainer');
+                
+                if (gameResultEl) {
+                    gameResultEl.style.display = 'none';
+                }
+                if (gameContainerEl) {
+                    gameContainerEl.style.display = 'block';
                 }
             }
             
-            // Update the chore
-            this.customChores[choreIndex].name = name;
-            this.customChores[choreIndex].time = time;
-            this.updateChoresList();
-            this.saveCustomChores();
-            this.renderChores();
-            this.closeAddChoreModal();
+            // Check if opponent just made a move (board changed, turn changed to us, and it was opponent's turn before)
+            const boardChanged = previousBoard !== JSON.stringify(this.board);
+            const opponentColor = this.myPlayerColor === 'green' ? 'red' : 'green';
+            const turnChangedToUs = previousCurrentPlayer !== newCurrentPlayer && newCurrentPlayer === this.myPlayerColor;
+            const wasOpponentTurn = previousCurrentPlayer === opponentColor;
             
-            // Show success feedback
-            const saveBtn = document.getElementById('saveChoreBtn');
-            const originalText = saveBtn.textContent;
-            saveBtn.textContent = '✓ Updated!';
-            setTimeout(() => {
-                saveBtn.textContent = originalText;
-            }, 2000);
-        } else {
-            // Adding new chore
-            // Check if chore with same name already exists
-            if (this.customChores.some(chore => chore.name.toLowerCase() === name.toLowerCase())) {
-                alert('A chore with this name already exists');
-                return;
+            // Vibrate if opponent made a move and it's now our turn
+            if (this.gameMode === 'online' && this.gameActive && boardChanged && turnChangedToUs && wasOpponentTurn) {
+                this.vibrate();
             }
             
-            // Add new custom chore
-            const newChore = {
-                name: name,
-                time: time,
-                id: Date.now().toString() // Unique ID for the chore
+            // Update ready status display if game is over
+            if (!this.gameActive && this.gameMode === 'online') {
+                this.updateReadyStatusDisplay();
+            }
+            
+            // Sync emotes - get emotes based on player colors
+            // Player 1 (green) emote and Player 2 (red) emote are stored separately
+            const player1Emote = gameState.player1Emote || null;
+            const player2Emote = gameState.player2Emote || null;
+            
+            // Set our emote and opponent's emote based on which player we are
+            if (this.myPlayerColor === 'green') {
+                // We are Player 1 (green)
+                this.myEmote = player1Emote;
+                this.receivedEmote = player2Emote;
+            } else {
+                // We are Player 2 (red)
+                this.myEmote = player2Emote;
+                this.receivedEmote = player1Emote;
+            }
+            
+            // Update emote display if game has ended (show both emotes side by side)
+            if (!this.gameActive && this.gameMode === 'online') {
+                this.updateEmoteDisplay();
+            }
+
+            // Restore visual state
+            this.restoreVisualState();
+            this.updateCurrentPlayerDisplay();
+            this.updatePlayerDeck();
+            this.updateScoreDisplay();
+
+            // Clear loading flag
+            this.isLoadingFromFirebase = false;
+            
+            // Check for game end - show result if game ended
+            // Only show result if game is NOT active (safeguard against showing result during active gameplay)
+            if (!this.gameActive && this.gameResult && this.gameMode === 'online') {
+                // Game ended - show the result message for both players
+                let message = this.gameResult.message;
+                // For online mode, adjust the message if it's about us
+                if (this.gameResult.type === 'win') {
+                    if (this.gameResult.winner === this.myPlayerColor) {
+                        message = 'You Win! 🎉';
+                    } else {
+                        // Opponent won - opponentName is always the other player's name
+                        const winnerName = this.opponentName || 'Opponent';
+                        message = `${winnerName} Wins! 🎉`;
+                    }
+                }
+                this.showResult(message);
+            }
+        } catch (error) {
+            console.error('Error loading game state from Firebase:', error);
+            this.isLoadingFromFirebase = false; // Always clear flag, even on error
+        }
+    }
+
+    updateEmoteDisplay() {
+        // Display both players' emotes side by side
+        const myEmoteDisplay = document.getElementById('myEmoteDisplay');
+        const receivedEmoteDisplay = document.getElementById('receivedEmoteDisplay');
+        const myEmoteLabel = document.getElementById('myEmoteLabel');
+        const opponentEmoteLabel = document.getElementById('opponentEmoteLabel');
+        const emoteDisplay = document.getElementById('emoteDisplay');
+        
+        if (!emoteDisplay) return;
+        
+        // Update labels with player names for online mode
+        if (this.gameMode === 'online') {
+            if (myEmoteLabel) {
+                myEmoteLabel.textContent = this.myPlayerName || 'You';
+            }
+            if (opponentEmoteLabel) {
+                opponentEmoteLabel.textContent = this.opponentName || 'Opponent';
+            }
+        }
+        
+        // Show your emote
+        if (myEmoteDisplay) {
+            if (this.myEmote) {
+                // Add animation
+                myEmoteDisplay.style.animation = 'none';
+                setTimeout(() => {
+                    myEmoteDisplay.style.animation = 'popIn 0.3s ease';
+                }, 10);
+                myEmoteDisplay.textContent = this.myEmote;
+            } else {
+                myEmoteDisplay.textContent = '—';
+                myEmoteDisplay.style.animation = 'none';
+            }
+        }
+        
+        // Show opponent's emote
+        if (receivedEmoteDisplay) {
+            if (this.receivedEmote) {
+                // Add animation
+                receivedEmoteDisplay.style.animation = 'none';
+                setTimeout(() => {
+                    receivedEmoteDisplay.style.animation = 'popIn 0.3s ease';
+                }, 10);
+                receivedEmoteDisplay.textContent = this.receivedEmote;
+            } else {
+                receivedEmoteDisplay.textContent = '—';
+                receivedEmoteDisplay.style.animation = 'none';
+            }
+        }
+    }
+    
+    displayReceivedEmote(emote) {
+        // Legacy function - now we use updateEmoteDisplay instead
+        // This is kept for backwards compatibility but updateEmoteDisplay handles everything
+        this.updateEmoteDisplay();
+    }
+
+    vibrate() {
+        // Vibrate on mobile devices when opponent makes a move
+        if ('vibrate' in navigator) {
+            // Short vibration pattern: vibrate for 200ms, pause 100ms, vibrate 200ms
+            navigator.vibrate([200, 100, 200]);
+        }
+    }
+
+    syncGameStateToFirebase() {
+        if (!this.firebaseEnabled || !this.gameRoomId) return;
+
+        const gameState = this.getGameState();
+        db.collection('gameRooms').doc(this.gameRoomId).update({
+            gameState: gameState,
+            lastUpdate: firebase.firestore.FieldValue.serverTimestamp()
+        }).catch(error => {
+            console.error('Error syncing game state:', error);
+        });
+    }
+
+    loadGameFromURL(encodedState) {
+        try {
+            const gameState = JSON.parse(atob(encodedState));
+            
+            // Restore game state
+            this.board = gameState.board || ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
+            this.currentPlayer = gameState.currentPlayer || 'green';
+            this.gameActive = gameState.gameActive || false;
+            this.scores = gameState.scores || { green: 0, red: 0, draws: 0 };
+            this.replacedTiles = new Set(gameState.replacedTiles || []);
+            this.storedCellColors = gameState.storedCellColors || ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
+            
+            // Restore player decks
+            this.playerDecks = gameState.playerDecks || {
+                green: this.createDeck('green'),
+                red: this.createDeck('red')
             };
             
-            this.customChores.push(newChore);
-            this.updateChoresList();
-            this.saveCustomChores();
+            // Show game interface
+            document.getElementById('gameModeSelection').style.display = 'none';
+            document.getElementById('coinFlipContainer').style.display = 'none';
+            document.getElementById('gameContainer').style.display = 'block';
+            document.getElementById('gameResult').style.display = 'none';
             
-            // Refresh the chores display
-            this.renderChores();
+            // Show share button for online mode
+            document.getElementById('shareGameBtn').style.display = 'inline-block';
             
-            // Close modal
-            this.closeAddChoreModal();
+            // Restore visual state
+            this.restoreVisualState();
+            this.updateCurrentPlayerDisplay();
+            this.updatePlayerDeck();
+            this.updateScoreDisplay();
             
-            // Show success feedback
-            const saveBtn = document.getElementById('saveChoreBtn');
-            const originalText = saveBtn.textContent;
-            saveBtn.textContent = '✓ Saved!';
-            setTimeout(() => {
-                saveBtn.textContent = originalText;
-            }, 2000);
-        }
-    }
-    
-    updateAmountDisplay() {
-        const amount = this.currentAmount;
-        let displayText;
-        
-        if (amount === 0) {
-            displayText = '0';
-        } else if (amount > 0) {
-            // Positive amounts (for adding)
-            displayText = amount === 60 ? '+1 hour' : `+${amount} min`;
-        } else {
-            // Negative amounts (for subtracting)
-            const absAmount = Math.abs(amount);
-            displayText = absAmount === 60 ? '-1 hour' : `-${absAmount} min`;
-        }
-        
-        document.getElementById('selectedAmount').textContent = displayText;
-        
-        // Update modal display after adjustment
-        if (this.currentChildId) {
-            const child = this.children.find(c => c.id === this.currentChildId);
-            if (child) {
-                document.getElementById('modalCurrentTime').textContent = this.formatTime(child.timeBalance);
-            }
-        }
-    }
-
-    closeModal() {
-        document.getElementById('timeModal').style.display = 'none';
-        this.currentChildId = null;
-    }
-
-    adjustTime(childId, action, amount) {
-        const child = this.children.find(c => c.id === childId);
-        if (!child) return;
-
-        if (action === 'add') {
-            child.timeBalance += amount;
-            // Cap at maximum time balance (5 hours)
-            child.timeBalance = Math.min(child.timeBalance, this.MAX_TIME_BALANCE);
-        } else if (action === 'subtract') {
-            child.timeBalance = Math.max(0, child.timeBalance - amount);
-        }
-
-        this.saveChildren();
-        this.renderChildren();
-        
-        // Update modal display
-        if (this.currentChildId === childId) {
-            document.getElementById('modalCurrentTime').textContent = this.formatTime(child.timeBalance);
-        }
-    }
-
-    formatTime(minutes) {
-        const hours = Math.floor(minutes / 60);
-        const mins = minutes % 60;
-        
-        if (hours > 0) {
-            return `${hours}h ${mins}m`;
-        }
-        return `${mins}m`;
-    }
-
-    checkDailyBonus() {
-        try {
-            // Set flag to prevent Firebase overwrites during bonus processing
-            this.isProcessingBonus = true;
-            
-            const lastCheck = this.loadLastMidnightCheck();
-            const now = new Date();
-            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-            today.setHours(0, 0, 0, 0); // Ensure it's exactly midnight
-            
-            // Get last midnight with validation
-            let lastMidnight = null;
-            if (lastCheck) {
-                const parsedDate = new Date(lastCheck);
-                // Check if date is valid
-                if (!isNaN(parsedDate.getTime())) {
-                    parsedDate.setHours(0, 0, 0, 0); // Normalize to midnight
-                    lastMidnight = parsedDate;
-                } else {
-                    // Invalid date stored, clear it
-                    localStorage.removeItem('lastMidnightCheck');
-                }
-            }
-            
-            // Check if we've already given bonus today
-            if (lastMidnight && lastMidnight.getTime() === today.getTime()) {
-                this.isProcessingBonus = false;
-                this.renderChildren();
-                return; // Already checked today
-            }
-
-            // Calculate days since last check (with safety limit)
-            let daysToAdd = 0;
-            if (lastMidnight && lastMidnight < today) {
-                const diffTime = today.getTime() - lastMidnight.getTime();
-                daysToAdd = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-                // Safety limit: max 365 days at once (prevent infinite loops)
-                daysToAdd = Math.min(daysToAdd, 365);
-            } else if (!lastMidnight) {
-                // First time - no bonus to add today
-                this.saveLastMidnightCheck(today.toISOString());
-                this.isProcessingBonus = false;
-                this.renderChildren();
-                return;
-            }
-
-            // Add 30 minutes for each missed day (capped at 5 hours)
-            // The automatic bonus won't make the balance exceed 5 hours
-            if (daysToAdd > 0 && daysToAdd <= 365) {
-                const bonusAmount = 30 * daysToAdd;
-                this.children.forEach(child => {
-                    // Only add enough to reach the maximum, not exceed it
-                    const amountToAdd = Math.min(bonusAmount, this.MAX_TIME_BALANCE - child.timeBalance);
-                    if (amountToAdd > 0) {
-                        child.timeBalance += amountToAdd;
-                    }
-                });
-                this.saveLastMidnightCheck(today.toISOString());
-                this.saveChildren();
-                
-                // Wait a moment for Firebase to sync before clearing the flag
-                setTimeout(() => {
-                    this.isProcessingBonus = false;
-                }, 2000); // 2 seconds should be enough for Firebase to sync
-            } else {
-                this.isProcessingBonus = false;
-            }
-
-            this.renderChildren();
         } catch (error) {
-            console.error('Error in checkDailyBonus:', error);
-            this.isProcessingBonus = false;
-            // If there's an error, just render children without checking bonus
-            this.renderChildren();
+            console.error('Error loading game from URL:', error);
+            alert('Invalid game URL. Starting new game instead.');
+            this.startNewOnlineGame();
         }
     }
 
-    setupMidnightScheduler() {
-        // Check immediately when app loads
-        this.checkDailyBonus();
-
-        // Set up interval to check every minute
-        setInterval(() => {
-            this.checkDailyBonus();
-        }, 60000); // Check every minute
-
-        // Also schedule for exactly at midnight
-        this.scheduleMidnightCheck();
-    }
-
-    scheduleMidnightCheck() {
-        const now = new Date();
-        const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-        const msUntilMidnight = midnight - now;
-
-        setTimeout(() => {
-            this.checkDailyBonus();
-            // After first midnight check, continue checking daily
-            setInterval(() => {
-                this.checkDailyBonus();
-            }, 24 * 60 * 60 * 1000); // Check every 24 hours
-        }, msUntilMidnight);
-    }
-
-    renderChildren() {
-        const container = document.getElementById('childrenList');
-        const emptyState = document.getElementById('emptyState');
-
-        if (this.children.length === 0) {
-            container.innerHTML = '';
-            emptyState.style.display = 'block';
-            return;
-        }
-
-        emptyState.style.display = 'none';
-        container.innerHTML = '';
-
-        this.children.forEach(child => {
-            const card = document.createElement('div');
-            card.className = 'child-card';
-            
-            const timeClass = child.timeBalance > 60 ? 'time-high' : 
-                            child.timeBalance > 0 ? 'time-medium' : 'time-low';
-            
-            card.innerHTML = `
-                <div class="child-header">
-                    <h3>${this.escapeHtml(child.name)}</h3>
-                    <button class="delete-btn" onclick="app.deleteChild('${child.id}')" aria-label="Delete child">×</button>
-                </div>
-                <div class="time-display ${timeClass} clickable-time" onclick="app.openTimeModal('${child.id}')" style="cursor: pointer;">
-                    <span class="time-label">Time Balance:</span>
-                    <span class="time-value">${this.formatTime(child.timeBalance)}</span>
-                </div>
-            `;
-
-            container.appendChild(card);
+    restoreVisualState() {
+        const cells = document.querySelectorAll('.cell');
+        cells.forEach((cell, index) => {
+            const cellValue = this.board[index];
+            if (cellValue && typeof cellValue === 'number') {
+                // Get color from the stored game state instead of DOM
+                const cellColor = this.getStoredCellColor(index);
+                cell.innerHTML = `<span class="number">${cellValue}</span>`;
+                cell.className = `cell ${cellColor}`;
+                
+                if (this.replacedTiles.has(index)) {
+                    cell.classList.add('locked');
+                }
+            } else {
+                cell.innerHTML = '';
+                cell.className = 'cell';
+            }
         });
     }
 
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+    getStoredCellColor(index) {
+        // This method will be used to get color from stored state
+        // We need to store cell colors in the game state
+        return this.storedCellColors ? this.storedCellColors[index] : '';
     }
 
-    updateSyncStatus() {
-        const statusEl = document.getElementById('syncStatus');
-        if (statusEl) {
-            if (this.firebaseEnabled) {
-                statusEl.innerHTML = '🟢 Syncing across devices';
-                statusEl.style.color = '#90EE90'; // Light green for better visibility
-                statusEl.style.fontWeight = '600';
-            } else {
-                statusEl.innerHTML = '⚪ Local mode (Firebase not configured)';
-                statusEl.style.color = 'rgba(255, 255, 255, 0.8)'; // White with slight transparency
-                statusEl.style.fontWeight = '500';
+    updateURL() {
+        if (this.gameMode === 'online') {
+            const gameState = {
+                board: this.board,
+                currentPlayer: this.currentPlayer,
+                gameActive: this.gameActive,
+                scores: this.scores,
+                replacedTiles: Array.from(this.replacedTiles),
+                playerDecks: this.playerDecks,
+                storedCellColors: this.storedCellColors
+            };
+            
+            const encodedState = btoa(JSON.stringify(gameState));
+            const url = new URL(window.location);
+            url.searchParams.set('state', encodedState);
+            
+            if (window.history.replaceState) {
+                window.history.replaceState({}, '', url);
             }
         }
     }
 
-    openFamilyModal() {
-        // Update Family ID display
-        const familyIdDisplay = document.getElementById('familyIdDisplay');
-        if (familyIdDisplay) {
-            familyIdDisplay.value = this.familyId;
-        }
-        document.getElementById('familyModal').style.display = 'block';
-    }
-
-    closeFamilyModal() {
-        document.getElementById('familyModal').style.display = 'none';
-    }
-
-    setupFamilyIdUI() {
-        // Copy Family ID button
-        const copyBtn = document.getElementById('copyFamilyIdBtn');
-        if (copyBtn) {
-            copyBtn.addEventListener('click', () => {
-                const familyIdInput = document.getElementById('familyIdDisplay');
-                familyIdInput.select();
-                familyIdInput.setSelectionRange(0, 99999); // For mobile
-                try {
-                    document.execCommand('copy');
-                    copyBtn.textContent = 'Copied!';
-                    copyBtn.style.background = '#52C41A';
-                    setTimeout(() => {
-                        copyBtn.textContent = 'Copy';
-                        copyBtn.style.background = '';
-                    }, 2000);
-                } catch (err) {
-                    // Fallback for modern browsers
-                    navigator.clipboard.writeText(this.familyId).then(() => {
-                        copyBtn.textContent = 'Copied!';
-                        copyBtn.style.background = '#52C41A';
-                        setTimeout(() => {
-                            copyBtn.textContent = 'Copy';
-                            copyBtn.style.background = '';
-                        }, 2000);
-                    });
-                }
-            });
-        }
-
-        // Set Family ID button
-        const setBtn = document.getElementById('setFamilyIdBtn');
-        const familyIdInput = document.getElementById('familyIdInput');
-        if (setBtn && familyIdInput) {
-            setBtn.addEventListener('click', () => {
-                const newFamilyId = familyIdInput.value.trim();
-                if (newFamilyId && newFamilyId.length > 0) {
-                    if (confirm('This will connect to a different family. All local data will sync with the new family. Continue?')) {
-                        localStorage.setItem('tvTimeFamilyId', newFamilyId);
-                        this.familyId = newFamilyId;
-                        const familyIdDisplay = document.getElementById('familyIdDisplay');
-                        if (familyIdDisplay) {
-                            familyIdDisplay.value = newFamilyId;
-                        }
-                        familyIdInput.value = '';
-                        
-                        // Reinitialize Firebase connection with new family ID
-                        if (this.firebaseEnabled) {
-                            // Remove old listener and setup new one
-                            location.reload(); // Simplest way to restart with new ID
-                        } else {
-                            alert('Family ID updated. Refresh the page to connect.');
-                        }
-                    }
-                } else {
-                    alert('Please enter a Family ID');
-                }
-            });
-            
-            // Allow Enter key
-            familyIdInput.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    setBtn.click();
-                }
-            });
-        }
+    encodeGameState() {
+        const gameState = {
+            board: this.board,
+            currentPlayer: this.currentPlayer,
+            gameActive: this.gameActive,
+            scores: this.scores,
+            replacedTiles: Array.from(this.replacedTiles),
+            playerDecks: this.playerDecks,
+            storedCellColors: this.storedCellColors
+        };
+        
+        return btoa(JSON.stringify(gameState));
     }
 }
 
-// Initialize the app
-let app;
-document.addEventListener('DOMContentLoaded', () => {
+// Global functions for HTML onclick handlers
+let game;
+
+function startGame(mode) {
+    if (!game) {
+        game = new TicTacToeCardGame();
+    }
+    game.startGame(mode);
+}
+
+function resetGame() {
+    if (game) {
+        game.resetGame();
+    }
+}
+
+function changeGameMode() {
+    if (game) {
+        game.changeGameMode();
+    }
+}
+
+function proceedToGame() {
+    if (game) {
+        game.proceedToGame();
+    }
+}
+
+function showGameRoomModal() {
+    if (!game.firebaseEnabled) {
+        alert('Firebase is not available. Please access this game via HTTPS to use online multiplayer.');
+        return;
+    }
+    document.getElementById('gameRoomModal').style.display = 'block';
+}
+
+function closeGameRoomModal() {
+    document.getElementById('gameRoomModal').style.display = 'none';
+    // Clear the input field
+    const roomIdInput = document.getElementById('roomIdInput');
+    if (roomIdInput) {
+        roomIdInput.value = '';
+    }
+    // Clear status message
+    const roomStatus = document.getElementById('roomStatus');
+    if (roomStatus) {
+        roomStatus.textContent = '';
+    }
+}
+
+function handleModalBackdropClick(event) {
+    // Close modal if clicking on the backdrop (not the modal content)
+    if (event.target.id === 'gameRoomModal') {
+        closeGameRoomModal();
+    } else if (event.target.id === 'waitingRoomModal') {
+        cancelWaitingRoom();
+    }
+}
+
+function cancelWaitingRoom() {
+    // Clean up Firebase listener if active
+    if (game && game.gameUnsubscribe) {
+        game.gameUnsubscribe();
+        game.gameUnsubscribe = null;
+    }
+    
+    // Delete the game room if it exists
+    if (game && game.gameRoomId && typeof db !== 'undefined' && db !== null) {
+        db.collection('gameRooms').doc(game.gameRoomId).delete().catch(err => {
+            console.log('Error deleting game room:', err);
+        });
+    }
+    
+    // Reset game state
+    if (game) {
+        game.gameRoomId = null;
+        game.myPlayerColor = null;
+        game.gameMode = null;
+    }
+    
+    // Close modal and return to main menu
+    document.getElementById('waitingRoomModal').style.display = 'none';
+    document.getElementById('gameRoomModal').style.display = 'none';
+    document.getElementById('gameModeSelection').style.display = 'block';
+    document.getElementById('gameContainer').style.display = 'none';
+}
+
+function createGameRoom() {
+    if (game) {
+        game.createGameRoom();
+    }
+}
+
+function joinGameRoom() {
+    if (game) {
+        game.joinGameRoom();
+    }
+}
+
+function sendEmote(emote) {
+    if (!game || game.gameMode !== 'online') return;
+    
+    // Store the emote we're sending
+    game.myEmote = emote;
+    
+    // Update display immediately to show our emote
+    if (!game.gameActive) {
+        game.updateEmoteDisplay();
+    }
+    
+    // Sync to Firebase so opponent sees it
+    if (game.firebaseEnabled) {
+        game.syncGameStateToFirebase();
+    }
+    
+    // Visual feedback on button
+    const btn = event.target;
+    const originalTransform = btn.style.transform;
+    btn.style.transform = 'scale(1.3)';
+            setTimeout(() => {
+        btn.style.transform = originalTransform;
+    }, 200);
+}
+
+function copyGameRoomId() {
+    const roomIdInput = document.getElementById('gameRoomIdDisplay');
+    const copyBtn = document.getElementById('copyGameRoomBtn');
+    
+    if (!roomIdInput) return;
+    
+    roomIdInput.select();
+    roomIdInput.setSelectionRange(0, 99999);
     try {
-        app = new TVTimeManager();
-    } catch (error) {
-        console.error('Failed to initialize app:', error);
-        // Show error message to user
-        const container = document.querySelector('.container');
-        if (container) {
-            container.innerHTML = '<h1>Error Loading App</h1><p>Please refresh the page. If the problem persists, clear your browser cache.</p>';
+        document.execCommand('copy');
+        const originalText = copyBtn ? copyBtn.textContent : 'Copy';
+        if (copyBtn) {
+            copyBtn.textContent = 'Copied!';
+            setTimeout(() => {
+                copyBtn.textContent = originalText;
+            }, 2000);
         }
+    } catch (err) {
+        navigator.clipboard.writeText(roomIdInput.value).then(() => {
+            const originalText = copyBtn ? copyBtn.textContent : 'Copy';
+            if (copyBtn) {
+                copyBtn.textContent = 'Copied!';
+                setTimeout(() => {
+                    copyBtn.textContent = originalText;
+                }, 2000);
+            }
+        });
+    }
+}
+
+// Initialize game when page loads
+document.addEventListener('DOMContentLoaded', () => {
+    // Register Service Worker for PWA
+    // Service worker registration is now handled by UpdateManager
+    
+    game = new TicTacToeCardGame();
+    
+    // Ensure modals are closed on load
+    document.getElementById('gameRoomModal').style.display = 'none';
+    document.getElementById('waitingRoomModal').style.display = 'none';
+    
+    // Add touch-friendly event listeners for mobile buttons
+    const createGameBtn = document.getElementById('createGameBtn');
+    const joinGameBtn = document.getElementById('joinGameBtn');
+    const copyGameRoomBtn = document.getElementById('copyGameRoomBtn');
+    
+    if (createGameBtn) {
+        createGameBtn.addEventListener('click', createGameRoom);
+        createGameBtn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            createGameRoom();
+        });
+    }
+    
+    if (joinGameBtn) {
+        joinGameBtn.addEventListener('click', joinGameRoom);
+        joinGameBtn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            joinGameRoom();
+        });
+    }
+    
+    if (copyGameRoomBtn) {
+        copyGameRoomBtn.addEventListener('click', copyGameRoomId);
+        copyGameRoomBtn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            copyGameRoomId();
+        });
+    }
+    
+    // Add touch support for emote buttons
+    const emoteButtons = document.querySelectorAll('.emote-btn');
+    emoteButtons.forEach(btn => {
+        btn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            const emote = btn.textContent.trim();
+            sendEmote(emote);
+        });
+    });
+    
+    // Check if there's a game state in URL on page load
+    const urlParams = new URLSearchParams(window.location.search);
+    const gameState = urlParams.get('state');
+    
+    if (gameState) {
+        // Auto-start online mode if URL contains game state
+        game.startGame('online');
     }
 });
 
@@ -1229,9 +2110,9 @@ class UpdateManager {
         try {
             // Get version from cache name (most reliable method)
             const cacheNames = await caches.keys();
-            const currentCache = cacheNames.find(name => name.startsWith('tv-time-manager-'));
+            const currentCache = cacheNames.find(name => name.startsWith('tictactoe-advanced-'));
             if (currentCache) {
-                const version = currentCache.replace('tv-time-manager-', '');
+                const version = currentCache.replace('tictactoe-advanced-', '');
                 versionText.textContent = `App Version: ${version}`;
             } else {
                 // Try to get from service worker if available
@@ -1285,12 +2166,3 @@ if ('serviceWorker' in navigator && window.location.protocol !== 'file:') {
         updateManager.registerServiceWorker();
     });
 }
-
-// Suppress harmless browser extension errors in console
-window.addEventListener('error', (event) => {
-    if (event.message && event.message.includes('message channel closed')) {
-        event.preventDefault();
-        return false;
-    }
-}, true);
-
