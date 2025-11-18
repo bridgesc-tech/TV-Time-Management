@@ -1,6 +1,6 @@
 // Service Worker for TicTacToe Advanced PWA
 // Update this version number when you deploy a new version
-const APP_VERSION = '1.0.4';
+const APP_VERSION = '1.1.0';
 const CACHE_NAME = `tictactoe-advanced-${APP_VERSION}`;
 
 // Get the base path for GitHub Pages (works at root or subdirectory)
