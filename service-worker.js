@@ -1,29 +1,14 @@
-// Service Worker for TicTacToe Advanced PWA
 // Update this version number when you deploy a new version
 const APP_VERSION = '1.1.0';
-const CACHE_NAME = `tictactoe-advanced-${APP_VERSION}`;
-
-// Get the base path for GitHub Pages (works at root or subdirectory)
-const getBasePath = () => {
-  const path = self.location.pathname;
-  const parts = path.split('/');
-  // Remove empty parts and the last part (service-worker.js)
-  parts.pop();
-  return parts.filter(p => p).join('/') + '/';
-};
-
-const basePath = getBasePath();
-
+const CACHE_NAME = `tv-time-manager-${APP_VERSION}`;
 const urlsToCache = [
-  'index.html',
-  'styles.css',
-  'script.js',
-  'manifest.json',
-  'icon-192.png',
-  'icon-512.png'
-].map(url => basePath + url);
+  './',
+  './index.html',
+  './styles.css',
+  './script.js',
+  './manifest.json'
+];
 
-// Install event - cache files
 self.addEventListener('install', (event) => {
   console.log('Service Worker installing, version:', APP_VERSION);
   // Skip waiting to activate new service worker immediately
@@ -41,10 +26,10 @@ self.addEventListener('install', (event) => {
   );
 });
 
-// Activate event - clean up old caches
 self.addEventListener('activate', (event) => {
   console.log('Service Worker activating, version:', APP_VERSION);
   event.waitUntil(
+    // Clean up old caches
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames.map((cacheName) => {
@@ -61,7 +46,6 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Fetch event - network first for HTML, cache first for other resources
 self.addEventListener('fetch', (event) => {
   // For HTML files, always try network first to get updates
   if (event.request.destination === 'document' || 
@@ -114,4 +98,5 @@ self.addEventListener('message', (event) => {
     event.ports[0].postMessage({ version: APP_VERSION });
   }
 });
+
 
