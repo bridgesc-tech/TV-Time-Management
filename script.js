@@ -402,12 +402,24 @@ class TVTimeManager {
         });
 
         // Family Sync Modal button
-        document.getElementById('openFamilyModalBtn').addEventListener('click', () => {
-            this.openFamilyModal();
-        });
-        document.getElementById('closeFamilyModal').addEventListener('click', () => {
-            this.closeFamilyModal();
-        });
+        const openFamilyModalBtn = document.getElementById('openFamilyModalBtn');
+        if (openFamilyModalBtn) {
+            openFamilyModalBtn.addEventListener('click', () => {
+                this.openFamilyModal();
+            });
+            // Also add touchstart for better mobile support
+            openFamilyModalBtn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                this.openFamilyModal();
+            });
+        }
+        
+        const closeFamilyModalBtn = document.getElementById('closeFamilyModal');
+        if (closeFamilyModalBtn) {
+            closeFamilyModalBtn.addEventListener('click', () => {
+                this.closeFamilyModal();
+            });
+        }
 
         this.renderChildren();
     }

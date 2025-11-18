@@ -91,6 +91,10 @@ header h1 {
     display: flex;
     align-items: center;
     justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 .family-sync-button:hover {
@@ -769,7 +773,7 @@ header h1 {
 }
 
 /* Prevent text selection on buttons for better mobile UX */
-.btn, .time-btn, .delete-btn, .mode-btn {
+.btn, .time-btn, .delete-btn, .mode-btn, .family-sync-button {
     -webkit-tap-highlight-color: transparent;
     -webkit-touch-callout: none;
     -webkit-user-select: none;
@@ -819,6 +823,14 @@ header h1 {
     .settings-btn svg {
         width: 18px;
         height: 18px;
+    }
+    
+    .family-sync-button {
+        bottom: max(20px, env(safe-area-inset-bottom, 20px));
+        right: max(20px, env(safe-area-inset-right, 20px));
+        width: 56px;
+        height: 56px;
+        font-size: 24px;
     }
 }
 
