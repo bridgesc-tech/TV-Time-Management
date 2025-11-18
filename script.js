@@ -5,6 +5,7 @@ class TVTimeManager {
         this.firebaseEnabled = false;
         this.familyId = this.getOrCreateFamilyId();
         this.isProcessingBonus = false; // Flag to prevent Firebase overwrites during bonus processing
+        this.MAX_TIME_BALANCE = 300; // Maximum time balance in minutes (5 hours)
         
         // Time adjustment state - single unified array ordered from negative to positive
         // Add moves right (higher values), Subtract moves left (lower values)
@@ -712,6 +713,8 @@ class TVTimeManager {
 
         if (action === 'add') {
             child.timeBalance += amount;
+            // Cap at maximum time balance (5 hours)
+            child.timeBalance = Math.min(child.timeBalance, this.MAX_TIME_BALANCE);
         } else if (action === 'subtract') {
             child.timeBalance = Math.max(0, child.timeBalance - amount);
         }
@@ -781,11 +784,16 @@ class TVTimeManager {
                 return;
             }
 
-            // Add 30 minutes for each missed day
+            // Add 30 minutes for each missed day (capped at 5 hours)
+            // The automatic bonus won't make the balance exceed 5 hours
             if (daysToAdd > 0 && daysToAdd <= 365) {
                 const bonusAmount = 30 * daysToAdd;
                 this.children.forEach(child => {
-                    child.timeBalance += bonusAmount;
+                    // Only add enough to reach the maximum, not exceed it
+                    const amountToAdd = Math.min(bonusAmount, this.MAX_TIME_BALANCE - child.timeBalance);
+                    if (amountToAdd > 0) {
+                        child.timeBalance += amountToAdd;
+                    }
                 });
                 this.saveLastMidnightCheck(today.toISOString());
                 this.saveChildren();
