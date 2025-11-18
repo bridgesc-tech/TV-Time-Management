@@ -1,5 +1,5 @@
 // Update this version number when you deploy a new version
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const CACHE_NAME = `tv-time-manager-${APP_VERSION}`;
 const urlsToCache = [
   './',
